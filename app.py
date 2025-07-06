@@ -315,3 +315,20 @@ def update_staff_availabilities(staff_id):
         db.session.rollback()
         app.logger.error(f"Failed to update availabilities: {e}")
         return jsonify({"error": "設定の更新に失敗しました。"}), 500
+
+# 11. --- シフト自動作成API (POST) ---
+@app.route("/api/shifts/generate", methods=['POST'])
+def generate_shifts():
+    data = request.get_json()
+    year = data.get('year')
+    month = data.get('month')
+
+    if not year or not month:
+        return jsonify({"error": "年と月の情報が必要です"}), 400
+
+    app.logger.info(f"シフト自動作成リクエスト受信: {year}年{month}月")
+
+    return jsonify({
+        "message": f"{year}年{month}月のシフト作成機能はまだ準備中です！",
+        "generated_shifts": []
+    }), 200
