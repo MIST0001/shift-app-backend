@@ -81,13 +81,29 @@ def index():
         app.logger.error(f"Database connection failed: {e}")
         return jsonify({"error": "データベース接続に失敗しました。"}), 500
 
-
+# get_shift_data 関数を書き換える
 @app.route("/api/shift-data")
 def get_shift_data():
+    # URLから year と month パラメータを取得。なければエラー
+    year_str = request.args.get('year')
+    month_str = request.args.get('month')
+
+    if not year_str or not month_str:
+        return jsonify({"error": "yearとmonthパラメータは必須です"}), 400
+
     try:
-        # データベースから全スタッフと全シフトを取得
+        year = int(year_str)
+        month = int(month_str)
+
+        # データベースから全スタッフを取得 (スタッフは常に全員表示)
         all_staff = db.session.query(Staff).order_by(Staff.id).all()
-        all_shifts = db.session.query(Shift).all()
+        
+        # ★★★ 指定された年月のシフトのみを取得 ★★★
+        # SQLAlchemyのextract関数を使って、年月でフィルタリング
+        all_shifts = db.session.query(Shift).filter(
+            db.extract('year', Shift.date) == year,
+            db.extract('month', Shift.date) == month
+        ).all()
 
         # 取得したデータを辞書形式に変換
         staff_list = [s.to_dict() for s in all_staff]
@@ -98,10 +114,12 @@ def get_shift_data():
             "shifts": shift_list
         }
         return jsonify(response_data)
+        
+    except ValueError:
+        return jsonify({"error": "yearとmonthは整数である必要があります"}), 400
     except Exception as e:
         app.logger.error(f"Failed to fetch shift data: {e}")
         return jsonify({"error": "データの取得に失敗しました。"}), 500
-# app.py の一番下に追加
 
 # 4. --- シフト追加用APIエンドポイントの定義 (POST) ---
 @app.route("/api/shifts/add", methods=['POST'])
