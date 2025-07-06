@@ -400,7 +400,7 @@ def is_assignment_valid(staff, date, shift_type, shift_draft, num_days, required
         # もし、今入ってる人数が必要人数以上なら、もう入れない
         if current_count >= required_count:
             # printデバッグを追加してもいいね！
-            # print(f"DEBUG: [{staff.name}/{date.day}日/{shift_type}] -> NG (必要人数 {required_count}人 を満たしているため)")
+            print(f"DEBUG: [{staff.name}/{date.day}日/{shift_type}] -> NG (必要人数 {required_count}人 を満たしているため)")
             return False
     
     # 7. 新人の単独勤務チェック
