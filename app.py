@@ -446,7 +446,7 @@ def generate_shifts():
     required_staffing = data.get('required_staffing', {})
 
     if not year or not month: return jsonify({"error": "年と月の情報が必要です"}), 400
-    app.logger.info(f"シフト自動作成(v4)リクエスト受信: {year}年{month}月")
+    app.logger.info(f"シフト自動作成(v5)リクエスト受信: {year}年{month}月")
 
     try:
         all_staff = Staff.query.options(db.joinedload(Staff.availabilities)).order_by(Staff.id).all()
@@ -508,3 +508,32 @@ def generate_shifts():
         import traceback
         traceback.print_exc()
         return jsonify({"error": "シフトの自動作成中に予期せぬエラーが発生しました。"}), 500
+
+# 12. --- 月間シフト全削除API (POST) ---
+@app.route("/api/shifts/clear", methods=['POST'])
+def clear_all_shifts():
+    data = request.get_json()
+    year = data.get('year')
+    month = data.get('month')
+
+    if not year or not month:
+        return jsonify({"error": "年と月の情報が必要です"}), 400
+
+    try:
+        num_days = calendar.monthrange(year, month)[1]
+        start_date = DateObject(year, month, 1)
+        end_date = DateObject(year, month, num_days)
+
+        deleted_count = Shift.query.filter(
+            Shift.date.between(start_date, end_date)
+        ).delete(synchronize_session=False)
+        
+        db.session.commit()
+        
+        app.logger.info(f"{year}年{month}月のシフトを {deleted_count} 件削除しました。")
+        return jsonify({"message": f"{year}年{month}月の全シフトをクリアしました。"}), 200
+
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"シフトの全削除中にエラーが発生: {e}")
+        return jsonify({"error": "シフトのクリア中にエラーが発生しました。"}), 500
