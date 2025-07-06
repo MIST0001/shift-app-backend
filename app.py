@@ -34,6 +34,7 @@ class Staff(db.Model):
     name = db.Column(db.String, nullable=False)
     gender = db.Column(db.String)
     employment_type = db.Column(db.String)
+    experience = db.Column(db.String) # 経験列
     created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
 
     # 関連付け
@@ -46,6 +47,7 @@ class Staff(db.Model):
             'name': self.name,
             'gender': self.gender,
             'employment_type': self.employment_type,
+            'experience': self.experience,
             'availabilities': [a.to_dict() for a in self.availabilities]
         }
 
@@ -214,7 +216,8 @@ def add_staff():
         new_staff = Staff(
             name=data['name'],
             gender=data.get('gender'),
-            employment_type=data.get('employment_type')
+            employment_type=data.get('employment_type'),
+            experience=data.get('experience')
         )
         db.session.add(new_staff)
         db.session.commit()
@@ -242,6 +245,7 @@ def update_staff(staff_id):
         staff_to_update.name = data.get('name', staff_to_update.name)
         staff_to_update.gender = data.get('gender', staff_to_update.gender)
         staff_to_update.employment_type = data.get('employment_type', staff_to_update.employment_type)
+        staff_to_update.experience = data.get('experience', staff_to_update.experience)
 
         db.session.commit()
         return jsonify(staff_to_update.to_dict()), 200
@@ -293,10 +297,8 @@ def update_staff_availabilities(staff_id):
     availabilities_data = request.get_json()
     
     try:
-        # 既存の設定を一旦すべて削除
         StaffAvailability.query.filter_by(staff_id=staff_id).delete()
         
-        # 新しい設定をまとめて追加
         for av in availabilities_data:
             new_av = StaffAvailability(
                 staff_id=staff_id,
