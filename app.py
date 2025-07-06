@@ -342,14 +342,27 @@ def is_assignment_valid(staff, date, shift_type, shift_draft, num_days, required
     if not is_available: return False
 
     # 2. 夜勤ルール
+    # 過去のシフトとの整合性チェック
     prev_shift = shift_draft[staff.id].get(date - timedelta(days=1))
-    if prev_shift == "夜" and shift_type != "明": return False
+    if prev_shift == "夜" and shift_type != "明":
+        return False
     
     two_days_ago_shift = shift_draft[staff.id].get(date - timedelta(days=2))
-    if two_days_ago_shift == "夜" and shift_type != "休": return False
+    if two_days_ago_shift == "夜" and shift_type != "休":
+        return False
 
+    # これから夜勤を入れる場合のチェック
     if shift_type == "夜":
-        if staff.employment_type not in ["正規職員", "嘱託職員"]: return False
+        # 資格チェック
+        if staff.employment_type not in ["正規職員", "嘱託職員"]:
+            return False
+        # 未来のシフトとの整合性チェック
+        if date + timedelta(days=1) <= DateObject(date.year, date.month, num_days):
+            if (date + timedelta(days=1)) in shift_draft[staff.id] and shift_draft[staff.id][date + timedelta(days=1)] != "明":
+                return False
+        if date + timedelta(days=2) <= DateObject(date.year, date.month, num_days):
+            if (date + timedelta(days=2)) in shift_draft[staff.id] and shift_draft[staff.id][date + timedelta(days=2)] != "休":
+                return False
 
     # 3. 連勤チェック
     if shift_type in WORK_SHIFTS:
