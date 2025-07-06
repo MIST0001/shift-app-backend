@@ -446,7 +446,7 @@ def generate_shifts():
     required_staffing = data.get('required_staffing', {})
 
     if not year or not month: return jsonify({"error": "年と月の情報が必要です"}), 400
-    app.logger.info(f"シフト自動作成(v3)リクエスト受信: {year}年{month}月")
+    app.logger.info(f"シフト自動作成(v4)リクエスト受信: {year}年{month}月")
 
     try:
         all_staff = Staff.query.options(db.joinedload(Staff.availabilities)).order_by(Staff.id).all()
@@ -466,10 +466,22 @@ def generate_shifts():
             for staff in all_staff:
                 if date not in shift_draft[staff.id]:
                     unassigned_slots.append((date, staff))
-
-        app.logger.info(f"これから {len(unassigned_slots)} 個のマスを埋めます。")
         
-        success = solve_shift_puzzle(all_staff, unassigned_slots, shift_draft, num_days, required_staffing)
+        # --- 探索順の最適化 ---
+        slot_options = {}
+        all_staff_ids = shift_draft.keys()
+        for date, staff in unassigned_slots:
+            count = 0
+            for shift_type in ["早", "日1", "日2", "中", "遅", "夜", "休"]:
+                if is_assignment_valid(staff, date, shift_type, shift_draft, num_days, required_staffing, all_staff_ids):
+                    count += 1
+            slot_options[(date, staff)] = count
+        
+        sorted_unassigned_slots = sorted(unassigned_slots, key=lambda slot: slot_options[slot])
+
+        app.logger.info(f"これから {len(sorted_unassigned_slots)} 個のマスを、選択肢の少ない順に埋めます。")
+        
+        success = solve_shift_puzzle(all_staff, sorted_unassigned_slots, shift_draft, num_days, required_staffing)
 
         final_message = "シフトの自動作成が完了しました！"
         if not success:
