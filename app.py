@@ -211,3 +211,61 @@ def delete_shift(shift_id):
         db.session.rollback() # エラーが起きたら変更を元に戻す
         app.logger.error(f"Failed to delete shift: {e}")
         return jsonify({"error": "シフトの削除に失敗しました。"}), 500
+# app.py の一番下に追加
+
+# 7. --- スタッフ追加用API (POST) ---
+@app.route("/api/staff/add", methods=['POST'])
+def add_staff():
+    data = request.get_json()
+    if not data or not 'name' in data or not data['name'].strip():
+        return jsonify({"error": "スタッフ名は必須です"}), 400
+    
+    try:
+        new_staff = Staff(name=data['name'])
+        db.session.add(new_staff)
+        db.session.commit()
+        return jsonify(new_staff.to_dict()), 201
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Failed to add staff: {e}")
+        return jsonify({"error": "スタッフの追加に失敗しました。"}), 500
+
+# 8. --- スタッフ更新用API (PUT) ---
+@app.route("/api/staff/update/<int:staff_id>", methods=['PUT'])
+def update_staff(staff_id):
+    staff_to_update = db.session.query(Staff).get(staff_id)
+    if not staff_to_update:
+        return jsonify({"error": "対象のスタッフが見つかりません"}), 404
+
+    data = request.get_json()
+    if not data or not 'name' in data or not data['name'].strip():
+        return jsonify({"error": "スタッフ名は必須です"}), 400
+
+    try:
+        staff_to_update.name = data['name']
+        db.session.commit()
+        return jsonify(staff_to_update.to_dict()), 200
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Failed to update staff: {e}")
+        return jsonify({"error": "スタッフの更新に失敗しました。"}), 500
+
+# 9. --- スタッフ削除用API (DELETE) ---
+@app.route("/api/staff/delete/<int:staff_id>", methods=['DELETE'])
+def delete_staff(staff_id):
+    staff_to_delete = db.session.query(Staff).get(staff_id)
+    if not staff_to_delete:
+        return jsonify({"error": "対象のスタッフが見つかりません"}), 404
+    
+    # 関連するシフトがある場合は削除させない（安全策）
+    if staff_to_delete.shifts:
+        return jsonify({"error": "このスタッフには割り当てられたシフトがあるため、削除できません。"}), 400
+
+    try:
+        db.session.delete(staff_to_delete)
+        db.session.commit()
+        return jsonify({"message": f"Staff with id {staff_id} has been deleted."}), 200
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Failed to delete staff: {e}")
+        return jsonify({"error": "スタッフの削除に失敗しました。"}), 500
