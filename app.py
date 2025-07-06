@@ -390,12 +390,18 @@ def is_assignment_valid(staff, date, shift_type, shift_draft, num_days, required
 
     # 6. 日ごとの必要人数チェック
     if shift_type in WORK_SHIFTS:
-        date_str = date.isoformat() 
+        date_str = date.isoformat()
+        # その日のそのシフトに必要な人数を取得（設定がなければ0人）
         required_count = required_staffing.get(date_str, {}).get(shift_type, 0)
-        if required_count > 0:
-            current_count = sum(1 for sid in all_staff_ids if shift_draft[sid].get(date) == shift_type)
-            if current_count >= required_count:
-                return False
+        
+        # 今、そのシフトに入っている人数を数える
+        current_count = sum(1 for sid in all_staff_ids if shift_draft[sid].get(date) == shift_type)
+        
+        # もし、今入ってる人数が必要人数以上なら、もう入れない
+        if current_count >= required_count:
+            # printデバッグを追加してもいいね！
+            # print(f"DEBUG: [{staff.name}/{date.day}日/{shift_type}] -> NG (必要人数 {required_count}人 を満たしているため)")
+            return False
     
     # 7. 新人の単独勤務チェック
     if staff.experience == "新人" and shift_type in WORK_SHIFTS:
