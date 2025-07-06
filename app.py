@@ -250,22 +250,42 @@ def update_staff(staff_id):
         app.logger.error(f"Failed to update staff: {e}")
         return jsonify({"error": "スタッフの更新に失敗しました。"}), 500
 
-# 9. --- スタッフ削除用API (DELETE) ---
 @app.route("/api/staff/delete/<int:staff_id>", methods=['DELETE'])
 def delete_staff(staff_id):
+    # フロントエンドから 'force' パラメータを受け取る
+    # 例: /api/staff/delete/5?force=true
+    force_delete = request.args.get('force', 'false').lower() == 'true'
+
     staff_to_delete = db.session.query(Staff).get(staff_id)
     if not staff_to_delete:
         return jsonify({"error": "対象のスタッフが見つかりません"}), 404
     
-    # 関連するシフトがある場合は削除させない（安全策）
+    # 関連するシフトがある場合
     if staff_to_delete.shifts:
-        return jsonify({"error": "このスタッフには割り当てられたシフトがあるため、削除できません。"}), 400
+        # 'force=true' が指定されていない場合は、これまで通りエラーを返す
+        if not force_delete:
+            return jsonify({
+                "error": "このスタッフには割り当てられたシフトがあるため、削除できません。",
+                "needs_confirmation": True # フロントエンドに確認が必要だと伝える
+            }), 400
+        
+        # 'force=true' が指定されている場合は、関連シフトを削除
+        try:
+            for shift in staff_to_delete.shifts:
+                db.session.delete(shift)
+            # 先に関連シフトの削除をコミットしても良い（より安全）
+            # db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            app.logger.error(f"Failed to delete associated shifts for staff {staff_id}: {e}")
+            return jsonify({"error": "関連シフトの削除中にエラーが発生しました。"}), 500
 
+    # 最後にスタッフ本人を削除
     try:
         db.session.delete(staff_to_delete)
         db.session.commit()
-        return jsonify({"message": f"Staff with id {staff_id} has been deleted."}), 200
+        return jsonify({"message": f"Staff with id {staff_id} and all associated shifts have been deleted."}), 200
     except Exception as e:
         db.session.rollback()
-        app.logger.error(f"Failed to delete staff: {e}")
+        app.logger.error(f"Failed to delete staff {staff_id}: {e}")
         return jsonify({"error": "スタッフの削除に失敗しました。"}), 500
