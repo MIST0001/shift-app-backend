@@ -32,19 +32,21 @@ class Staff(db.Model):
     __tablename__ = 'staff'
     id = db.Column(db.BigInteger, primary_key=True)
     name = db.Column(db.String, nullable=False)
-    gender = db.Column(db.String) # 性別列
-    employment_type = db.Column(db.String) # 雇用形態列
+    gender = db.Column(db.String)
+    employment_type = db.Column(db.String)
     created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
 
-    # StaffからShiftsへの関連付け
+    # 関連付け
     shifts = relationship("Shift", back_populates="staff")
+    availabilities = relationship("StaffAvailability", back_populates="staff", cascade="all, delete-orphan")
 
     def to_dict(self):
         return {
             'id': self.id,
             'name': self.name,
             'gender': self.gender,
-            'employment_type': self.employment_type
+            'employment_type': self.employment_type,
+            'availabilities': [a.to_dict() for a in self.availabilities]
         }
 
 class Shift(db.Model):
@@ -56,7 +58,6 @@ class Shift(db.Model):
     staff_id = db.Column(db.BigInteger, db.ForeignKey('staff.id'), nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
     
-    # ShiftからStaffへの関連付け
     staff = relationship("Staff", back_populates="shifts")
 
     def to_dict(self):
@@ -67,6 +68,23 @@ class Shift(db.Model):
             'notes': self.notes,
             'staff_id': self.staff_id,
             'staff_name': self.staff.name if self.staff else None
+        }
+
+class StaffAvailability(db.Model):
+    __tablename__ = 'staff_availability'
+    id = db.Column(db.BigInteger, primary_key=True)
+    staff_id = db.Column(db.BigInteger, db.ForeignKey('staff.id', ondelete='CASCADE'), nullable=False)
+    day_of_week = db.Column(db.SmallInteger, nullable=False) # 0:Sun, 1:Mon...
+    shift_type = db.Column(db.String, nullable=False)
+    is_available = db.Column(db.Boolean, nullable=False, default=True)
+
+    staff = relationship("Staff", back_populates="availabilities")
+    
+    def to_dict(self):
+        return {
+            'day_of_week': self.day_of_week,
+            'shift_type': self.shift_type,
+            'is_available': self.is_available
         }
 
 
@@ -218,11 +236,9 @@ def update_staff(staff_id):
         return jsonify({"error": "更新データがありません"}), 400
 
     try:
-        # 'name' がリクエストに含まれ、かつ空文字や空白でないことを検証
         if 'name' in data and (not data.get('name') or not data.get('name').strip()):
              return jsonify({"error": "スタッフ名は空にできません"}), 400
         
-        # data.get() を使い、リクエストにキーが存在すれば更新、なければ既存の値を維持
         staff_to_update.name = data.get('name', staff_to_update.name)
         staff_to_update.gender = data.get('gender', staff_to_update.gender)
         staff_to_update.employment_type = data.get('employment_type', staff_to_update.employment_type)
@@ -266,3 +282,34 @@ def delete_staff(staff_id):
         db.session.rollback()
         app.logger.error(f"Failed to delete staff {staff_id}: {e}")
         return jsonify({"error": "スタッフの削除に失敗しました。"}), 500
+
+# 10. --- スタッフ勤務可否設定更新用API (POST) ---
+@app.route("/api/staff/availabilities/update/<int:staff_id>", methods=['POST'])
+def update_staff_availabilities(staff_id):
+    staff = db.session.query(Staff).get(staff_id)
+    if not staff:
+        return jsonify({"error": "スタッフが見つかりません"}), 404
+
+    availabilities_data = request.get_json()
+    
+    try:
+        # 既存の設定を一旦すべて削除
+        StaffAvailability.query.filter_by(staff_id=staff_id).delete()
+        
+        # 新しい設定をまとめて追加
+        for av in availabilities_data:
+            new_av = StaffAvailability(
+                staff_id=staff_id,
+                day_of_week=av['day_of_week'],
+                shift_type=av['shift_type'],
+                is_available=av['is_available']
+            )
+            db.session.add(new_av)
+        
+        db.session.commit()
+        return jsonify({"message": "勤務可否設定を更新しました。"}), 200
+
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Failed to update availabilities: {e}")
+        return jsonify({"error": "設定の更新に失敗しました。"}), 500
