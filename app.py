@@ -1,9 +1,11 @@
 import os
+import calendar
+import random
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy.orm import relationship
-from datetime import date as DateObject
+from sqlalchemy.orm import relationship, joinedload
+from datetime import date as DateObject, timedelta
 
 # 1. --- アプリケーションとデータベースの初期設定 ---
 app = Flask(__name__)
@@ -316,19 +318,167 @@ def update_staff_availabilities(staff_id):
         app.logger.error(f"Failed to update availabilities: {e}")
         return jsonify({"error": "設定の更新に失敗しました。"}), 500
 
+# =================================================================
+# --- シフト自動作成のヘルパー関数群 (Helper Functions) ---
+# =================================================================
+
+def is_shift_assignable(staff, target_date, shift_type, shift_draft, num_days_in_month, TARGET_HOLIDAYS):
+    """
+    指定されたスタッフ、日付、シフトの組み合わせで割り当て可能かチェックする。
+    Trueなら割り当てOK、FalseならNG。
+    """
+    work_shifts = ["早", "日1", "日2", "中", "遅", "夜"]
+
+    # ルール1: 勤務可否設定のチェック
+    day_of_week = target_date.weekday()
+    day_of_week_supabase = (day_of_week + 1) % 7
+    is_available_by_setting = True
+    for availability in staff.availabilities:
+        if availability.day_of_week == day_of_week_supabase and availability.shift_type == shift_type:
+            is_available_by_setting = availability.is_available
+            break
+    if not is_available_by_setting:
+        return False
+
+    # ルール2: 夜勤の後の「明→休」ルール
+    prev_date = target_date - timedelta(days=1)
+    prev_shift = shift_draft[staff.id].get(prev_date)
+    if prev_shift == "夜" and shift_type != "明":
+        return False
+    two_days_ago_date = target_date - timedelta(days=2)
+    two_days_ago_shift = shift_draft[staff.id].get(two_days_ago_date)
+    if two_days_ago_shift == "夜" and shift_type != "休":
+        return False
+
+    # ルール3: 連勤制限のチェック (最大4連勤まで)
+    if shift_type in work_shifts:
+        consecutive_work_days = 0
+        for i in range(1, 5):
+            check_date = target_date - timedelta(days=i)
+            shift_on_that_day = shift_draft[staff.id].get(check_date)
+            if shift_on_that_day in work_shifts:
+                consecutive_work_days += 1
+            else:
+                break
+        if consecutive_work_days >= 4:
+            return False
+            
+    # ルール4: 夜勤の資格チェック
+    if shift_type == "夜":
+        allowed_employment_types = ["正規職員", "嘱託職員"]
+        if staff.employment_type not in allowed_employment_types:
+            return False
+
+    # ルール5: 月間公休数の上限・下限チェック
+    current_holidays = list(shift_draft[staff.id].values()).count("休")
+    assigned_days = len(shift_draft[staff.id])
+    remaining_days = num_days_in_month - assigned_days
+    
+    if shift_type in work_shifts:
+        if remaining_days <= (TARGET_HOLIDAYS - current_holidays):
+            return False
+    
+    if shift_type == "休":
+        if current_holidays >= TARGET_HOLIDAYS:
+            return False
+
+    return True
+
 # 11. --- シフト自動作成API (POST) ---
 @app.route("/api/shifts/generate", methods=['POST'])
 def generate_shifts():
     data = request.get_json()
     year = data.get('year')
     month = data.get('month')
+    TARGET_HOLIDAYS = data.get('targetHolidays', 8)
 
     if not year or not month:
         return jsonify({"error": "年と月の情報が必要です"}), 400
 
-    app.logger.info(f"シフト自動作成リクエスト受信: {year}年{month}月")
+    app.logger.info(f"シフト自動作成リクエスト受信: {year}年{month}月 (目標公休: {TARGET_HOLIDAYS}日)")
 
-    return jsonify({
-        "message": f"{year}年{month}月のシフト作成機能はまだ準備中です！",
-        "generated_shifts": []
-    }), 200
+    try:
+        # 1. 必要なデータをDBから取得
+        all_staff = Staff.query.options(
+            joinedload(Staff.availabilities)
+        ).order_by(Staff.id).all()
+        
+        num_days = calendar.monthrange(year, month)[1]
+        start_date = DateObject(year, month, 1)
+        end_date = DateObject(year, month, num_days)
+        prev_month_end_date = start_date - timedelta(days=1)
+        
+        existing_shifts = Shift.query.filter(
+            Shift.date.between(prev_month_end_date, end_date)
+        ).all()
+        
+        # 2. シフト下書きを作成し、既存シフトを転記
+        shift_draft = {staff.id: {} for staff in all_staff}
+        for shift in existing_shifts:
+            if shift.staff_id in shift_draft:
+                shift_draft[shift.staff_id][shift.date] = shift.shift_type
+
+        # 3. 自動作成ロジック
+        all_dates_in_month = [start_date + timedelta(days=i) for i in range(num_days)]
+        
+        # --- ステージ1: 全員の必要公休数（休）を先に割り当てる ---
+        required_holidays = {}
+        for staff in all_staff:
+            current_holidays = list(shift_draft[staff.id].values()).count("休")
+            required_holidays[staff.id] = TARGET_HOLIDAYS - current_holidays
+        
+        for staff in all_staff:
+            holidays_to_add = required_holidays.get(staff.id, 0)
+            if holidays_to_add <= 0: continue
+            
+            for day in all_dates_in_month:
+                if holidays_to_add > 0 and day not in shift_draft[staff.id]:
+                    if is_shift_assignable(staff, day, "休", shift_draft, num_days, TARGET_HOLIDAYS):
+                        shift_draft[staff.id][day] = "休"
+                        holidays_to_add -= 1
+
+        # --- ステージ2: 残りの空きマスに勤務シフトを割り当てる ---
+        shift_types_to_assign = ["早", "日1", "日2", "中", "遅", "夜"]
+        for day in all_dates_in_month:
+            for staff in all_staff:
+                if day not in shift_draft[staff.id]:
+                    random.shuffle(shift_types_to_assign)
+                    for shift_type in shift_types_to_assign:
+                        if is_shift_assignable(staff, day, shift_type, shift_draft, num_days, TARGET_HOLIDAYS):
+                            shift_draft[staff.id][day] = shift_type
+                            break
+        
+        # 4. 完成した下書きをDB保存形式に変換
+        new_shifts_to_create = []
+        for staff_id, date_shifts in shift_draft.items():
+            for date_obj, shift_type in date_shifts.items():
+                if shift_type and date_obj >= start_date: 
+                    new_shift = Shift(
+                        staff_id=staff_id,
+                        date=date_obj,
+                        shift_type=shift_type
+                    )
+                    new_shifts_to_create.append(new_shift)
+
+        # 5. 古いシフトを一度消して、新しいシフトで上書きする
+        Shift.query.filter(
+            Shift.date.between(start_date, end_date)
+        ).delete(synchronize_session=False)
+
+        db.session.bulk_save_objects(new_shifts_to_create)
+        db.session.commit()
+
+        app.logger.info(f"データベースのシフト情報を更新しました。")
+
+        # 6. 完成したシフトをフロントエンドに返す
+        return jsonify({
+            "message": f"{year}年{month}月のシフト作成が完了しました！",
+            "generated_shifts": [s.to_dict() for s in new_shifts_to_create]
+        }), 200
+
+    except Exception as e:
+        db.session.rollback()
+        import traceback
+        traceback.print_exc()
+        app.logger.error(f"シフト自動作成中にエラーが発生: {e}")
+        return jsonify({"error": "シフトの自動作成中に予期せぬエラーが発生しました。"}), 500
