@@ -168,3 +168,28 @@ def update_shift(shift_id):
         db.session.rollback() # エラーが起きたら変更を元に戻す
         app.logger.error(f"Failed to update shift: {e}")
         return jsonify({"error": "シフトの更新に失敗しました。"}), 500
+# app.py の一番下に追加
+
+# 6. --- シフト削除用APIエンドポイントの定義 (DELETE) ---
+@app.route("/api/shifts/delete/<int:shift_id>", methods=['DELETE'])
+def delete_shift(shift_id):
+    # 削除対象のシフトをデータベースから検索
+    shift_to_delete = db.session.query(Shift).get(shift_id)
+
+    # もし指定されたIDのシフトが見つからなければエラーを返す
+    if not shift_to_delete:
+        return jsonify({"error": "対象のシフトが見つかりません"}), 404
+
+    try:
+        # データベースセッションからオブジェクトを削除
+        db.session.delete(shift_to_delete)
+        # データベースにコミット（変更を確定）
+        db.session.commit()
+
+        # 成功した場合は、成功メッセージを返す
+        return jsonify({"message": f"Shift with id {shift_id} has been deleted."}), 200
+
+    except Exception as e:
+        db.session.rollback() # エラーが起きたら変更を元に戻す
+        app.logger.error(f"Failed to delete shift: {e}")
+        return jsonify({"error": "シフトの削除に失敗しました。"}), 500
