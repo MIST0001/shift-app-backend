@@ -340,27 +340,27 @@ def is_assignment_valid(staff, date, shift_type, shift_draft, num_days, required
     day_of_week_db = (day_of_week_py + 1) % 7
     is_available = next((a.is_available for a in staff.availabilities if a.day_of_week == day_of_week_db and a.shift_type == shift_type), True)
     if not is_available:
-        print(f"DEBUG: [{staff.name}/{date.day}日/{shift_type}] -> NG (勤務不可)")
+        # print(f"DEBUG: [{staff.name}/{date.day}日/{shift_type}] -> NG (勤務不可)")
         return False
 
     # 2. 夜勤ルール
     prev_shift = shift_draft[staff.id].get(date - timedelta(days=1))
     if prev_shift == "夜" and shift_type != "明":
-        print(f"DEBUG: [{staff.name}/{date.day}日/{shift_type}] -> NG (夜勤明けルール違反)")
+        # print(f"DEBUG: [{staff.name}/{date.day}日/{shift_type}] -> NG (夜勤明けルール違反)")
         return False
     
     two_days_ago_shift = shift_draft[staff.id].get(date - timedelta(days=2))
     if two_days_ago_shift == "夜" and shift_type != "休":
-        print(f"DEBUG: [{staff.name}/{date.day}日/{shift_type}] -> NG (夜勤翌々日ルール違反)")
+        # print(f"DEBUG: [{staff.name}/{date.day}日/{shift_type}] -> NG (夜勤翌々日ルール違反)")
         return False
 
     if shift_type == "夜":
         if staff.employment_type not in ["正規職員", "嘱託職員"]:
-            print(f"DEBUG: [{staff.name}/{date.day}日/{shift_type}] -> NG (夜勤資格なし)")
+            # print(f"DEBUG: [{staff.name}/{date.day}日/{shift_type}] -> NG (夜勤資格なし)")
             return False
 
     # 3. 連勤チェック
-    if shift_type in WORK_SHIFTS:
+    if shift_type in WORK_SHIFTS and shift_type != '明':
         consecutive_work = 0
         for i in range(1, 5): # 1日前から4日前までチェック
             if shift_draft[staff.id].get(date - timedelta(days=i)) in WORK_SHIFTS:
@@ -368,25 +368,41 @@ def is_assignment_valid(staff, date, shift_type, shift_draft, num_days, required
             else:
                 break
         if consecutive_work >= 4:
-            print(f"DEBUG: [{staff.name}/{date.day}日/{shift_type}] -> NG (5連勤以上になるため)")
+            # print(f"DEBUG: [{staff.name}/{date.day}日/{shift_type}] -> NG (5連勤以上になるため)")
             return False
 
     # 4. 公休数チェック
     current_holidays = list(shift_draft[staff.id].values()).count("休")
-    # これから埋める必要があるマスの数
     remaining_slots = num_days - len(shift_draft[staff.id])
-    # 必要な残りの公休数
     required_holidays = TARGET_HOLIDAYS - current_holidays
     
-    # 既に目標公休数に達しているのに、さらに休みを入れようとしたらNG
     if shift_type == "休" and current_holidays >= TARGET_HOLIDAYS:
-        print(f"DEBUG: [{staff.name}/{date.day}日/{shift_type}] -> NG (公休数オーバー)")
+        # print(f"DEBUG: [{staff.name}/{date.day}日/{shift_type}] -> NG (公休数オーバー)")
         return False
-    # 残りのマス数が、必要な公休数より少ないのに、勤務を入れようとしたらNG
     if shift_type in WORK_SHIFTS and remaining_slots < required_holidays:
-        print(f"DEBUG: [{staff.name}/{date.day}日/{shift_type}] -> NG (公休数が足りなくなるため)")
+        # print(f"DEBUG: [{staff.name}/{date.day}日/{shift_type}] -> NG (公休数が足りなくなるため)")
         return False
     
+    # 5. 総労働時間チェック
+    max_hours = (num_days / 7) * 40
+    current_hours = sum(SHIFT_HOURS.get(s, 0) for s in shift_draft[staff.id].values())
+    if current_hours + SHIFT_HOURS.get(shift_type, 0) > max_hours: return False
+
+    # 6. 日ごとの必要人数チェック
+    if shift_type in WORK_SHIFTS:
+        date_str = date.isoformat() 
+        required_count = required_staffing.get(date_str, {}).get(shift_type, 0)
+        if required_count > 0:
+            current_count = sum(1 for sid in all_staff_ids if shift_draft[sid].get(date) == shift_type)
+            if current_count >= required_count:
+                return False
+    
+    # 7. 新人の単独勤務チェック
+    if staff.experience == "新人" and shift_type in WORK_SHIFTS:
+        is_someone_else_working = any(shift_draft[sid].get(date) in WORK_SHIFTS for sid in all_staff_ids if sid != staff.id)
+        if not is_someone_else_working:
+            return False
+
     return True
 
 
@@ -401,7 +417,7 @@ def solve_shift_puzzle(staff_list, dates_to_fill, shift_draft, num_days, require
     all_staff_ids = shift_draft.keys()
 
     # --- 候補シフトの優先順位付けロジック ---
-    base_shifts = ["早", "日1", "日2", "中", "遅", "夜", "休"]
+    base_shifts = ["早", "日1", "日2", "中", "遅", "夜", "休", "明", "有"]
     shift_scores = {shift: 0 for shift in base_shifts}
 
     # 努力目標1: 夜勤の公平性
