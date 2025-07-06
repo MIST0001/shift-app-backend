@@ -1,9 +1,9 @@
-from flask import Flask, jsonify
-from flask_cors import CORS # CORSを追加
-
-app = Flask(__name__)
-CORS(app) # これでどのサイトからでもAPIにアクセスできるようになる
-
-@app.route("/")
-def index():
-    return jsonify({"message": "連携成功！Renderからこんにちは！"})
+# app.py の例
+@app.route("/shifts") # 新しいURLを追加
+def get_shifts():
+    dummy_data = [
+        {"date": "2025-07-01", "staff_name": "田中", "shift_type": "早"},
+        {"date": "2025-07-01", "staff_name": "鈴木", "shift_type": "日"},
+        {"date": "2025-07-02", "staff_name": "田中", "shift_type": "休"}
+    ]
+    return jsonify(dummy_data)
