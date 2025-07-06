@@ -1,5 +1,5 @@
 import os
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.orm import relationship
@@ -101,3 +101,36 @@ def get_shift_data():
     except Exception as e:
         app.logger.error(f"Failed to fetch shift data: {e}")
         return jsonify({"error": "データの取得に失敗しました。"}), 500
+# app.py の一番下に追加
+
+# 4. --- シフト追加用APIエンドポイントの定義 (POST) ---
+@app.route("/api/shifts/add", methods=['POST'])
+def add_shift():
+    # フロントエンドから送られてきたJSONデータを取得
+    data = request.get_json()
+
+    # データが正しいか簡単なチェック
+    if not data or not 'date' in data or not 'shift_type' in data or not 'staff_id' in data:
+        return jsonify({"error": "不十分なデータです"}), 400
+
+    try:
+        # 新しいShiftオブジェクトを作成
+        new_shift = Shift(
+            date=DateObject.fromisoformat(data['date']),
+            shift_type=data['shift_type'],
+            staff_id=data['staff_id'],
+            notes=data.get('notes', '') # 備考は任意
+        )
+
+        # データベースセッションに追加
+        db.session.add(new_shift)
+        # データベースにコミット（変更を確定）
+        db.session.commit()
+
+        # 成功した場合は、作成されたシフトの情報を返す
+        return jsonify(new_shift.to_dict()), 201 # 201は「作成成功」を示すステータスコード
+
+    except Exception as e:
+        db.session.rollback() # エラーが起きたら変更を元に戻す
+        app.logger.error(f"Failed to add shift: {e}")
+        return jsonify({"error": "シフトの追加に失敗しました。"}), 500
