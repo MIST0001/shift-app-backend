@@ -435,7 +435,7 @@ def solve_shift_puzzle(staff_list, dates_to_fill, shift_draft, num_days, require
                     shortage = required_count - current_count
                     shift_scores[shift_type] += 100 * shortage # 不足人数が多いほど高得点
 
-     print(f"計算後のボーナスポイント: {shift_scores}")
+    print(f"計算後のボーナスポイント: {shift_scores}")
 
     # 2. 勤務希望にボーナス
     day_of_week_py = date.weekday()
