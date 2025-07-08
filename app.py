@@ -465,6 +465,10 @@ def solve_shift_puzzle(staff_list, dates_to_fill, shift_draft, num_days, require
 
 @app.route("/api/shifts/generate", methods=['POST'])
 def generate_shifts():
+
+        # ↓↓↓★ここに、この魔法の呪文を追加してみて！★↓↓↓
+    print("★★★ generate_shifts関数が呼び出されました！ ★★★")
+    
     data = request.get_json()
     year, month = data.get('year'), data.get('month')
     TARGET_HOLIDAYS = data.get('targetHolidays', 8)
