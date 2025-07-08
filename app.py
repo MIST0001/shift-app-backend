@@ -413,8 +413,7 @@ def solve_shift_puzzle(staff_list, dates_to_fill, shift_draft, num_days, require
     if not dates_to_fill:
         return True # 全てのマスが埋まったら成功
 
-    date, staff = dates_to_fill[0]
-    remaining_dates = dates_to_fill[1:]
+    (date, staff), *remaining_dates = dates_to_fill
     all_staff_ids = list(shift_draft.keys())
 
     # 割り当て可能なシフト候補
