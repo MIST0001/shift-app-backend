@@ -487,6 +487,9 @@ def generate_shifts():
         prev_month_end = start_date - timedelta(days=1)
         existing_shifts = Shift.query.filter(Shift.date.between(prev_month_end, end_date)).all()
 
+        # ↓↓↓★ここに、この1行を追加してみて！★↓↓↓
+        print(f"★★★【データ取得係チェック】データベースから {len(existing_shifts)} 件の既存シフトを見つけました。★★★")
+
         # シフト下書き(shift_draft)の初期化
         shift_draft = {s.id: {} for s in all_staff}
         for shift in existing_shifts:
