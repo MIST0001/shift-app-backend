@@ -420,6 +420,9 @@ def solve_shift_puzzle(staff_list, dates_to_fill, shift_draft, num_days, require
     # 割り当て可能なシフト候補
     base_shifts = ["早", "日1", "日2", "中", "遅", "夜", "休", "明", "有"]
     shift_scores = {shift: 0 for shift in base_shifts}
+
+    print(f"\n---【司令室チェック】---")
+    print(f"日付: {date}, スタッフ: {staff.name}")
     
     # --- スコアリング ---
     # 1. 必要人数が足りないシフトにボーナス
@@ -431,6 +434,8 @@ def solve_shift_puzzle(staff_list, dates_to_fill, shift_draft, num_days, require
                 if current_count < required_count:
                     shortage = required_count - current_count
                     shift_scores[shift_type] += 100 * shortage # 不足人数が多いほど高得点
+
+     print(f"計算後のボーナスポイント: {shift_scores}")
 
     # 2. 勤務希望にボーナス
     day_of_week_py = date.weekday()
