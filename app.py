@@ -1,11 +1,10 @@
 import os
-import calendar
-import random
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy.orm import relationship, joinedload
+from sqlalchemy.orm import relationship
 from datetime import date as DateObject, timedelta
+import random
 
 # 1. --- アプリケーションとデータベースの初期設定 ---
 app = Flask(__name__)
@@ -26,16 +25,6 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 # SQLAlchemyをアプリケーションに連携
 db = SQLAlchemy(app)
 
-# =================================================================
-# --- 定数定義 (Constants) ---
-# =================================================================
-SHIFT_HOURS = {
-    "早": 8, "日1": 8, "日2": 8, "中": 8, "遅": 8, "夜": 16,
-    "明": 0, "休": 0, "有": 0
-}
-WORK_SHIFTS = [s for s, h in SHIFT_HOURS.items() if h > 0]
-TARGET_HOLIDAYS = 8 # デフォルトの目標公休数
-
 
 # 2. --- データベースモデルの定義 ---
 # Pythonのクラスと、データベースのテーブルを対応させる
@@ -50,7 +39,7 @@ class Staff(db.Model):
     created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now())
 
     # 関連付け
-    shifts = relationship("Shift", back_populates="staff")
+    shifts = relationship("Shift", back_populates="staff", cascade="all, delete-orphan")
     availabilities = relationship("StaffAvailability", back_populates="staff", cascade="all, delete-orphan")
 
     def to_dict(self):
@@ -275,13 +264,16 @@ def delete_staff(staff_id):
     if not staff_to_delete:
         return jsonify({"error": "対象のスタッフが見つかりません"}), 404
     
+    # 関連するシフトがあるか確認
     if staff_to_delete.shifts:
         if not force_delete:
+            # 強制削除フラグがない場合は、確認を求めるエラーを返す
             return jsonify({
                 "error": "このスタッフには割り当てられたシフトがあるため、削除できません。",
                 "needs_confirmation": True
             }), 400
         
+        # 強制削除フラグがある場合は、関連するシフトをすべて削除
         try:
             for shift in staff_to_delete.shifts:
                 db.session.delete(shift)
@@ -309,8 +301,10 @@ def update_staff_availabilities(staff_id):
     availabilities_data = request.get_json()
     
     try:
+        # 既存の設定を一度すべて削除
         StaffAvailability.query.filter_by(staff_id=staff_id).delete()
         
+        # 新しい設定を追加
         for av in availabilities_data:
             new_av = StaffAvailability(
                 staff_id=staff_id,
@@ -328,219 +322,130 @@ def update_staff_availabilities(staff_id):
         app.logger.error(f"Failed to update availabilities: {e}")
         return jsonify({"error": "設定の更新に失敗しました。"}), 500
 
-# =================================================================
-# --- シフト自動作成 バックトラッキング版 ---
-# =================================================================
-
-def is_assignment_valid(staff, date, shift_type, shift_draft, num_days, required_staffing, all_staff_ids):
-    """個人ルールと全体ルールのチェックをここに集約"""
-
-    # 1. 勤務可否チェック
-    day_of_week_py = date.weekday()
-    day_of_week_db = (day_of_week_py + 1) % 7
-    is_available = next((a.is_available for a in staff.availabilities if a.day_of_week == day_of_week_db and a.shift_type == shift_type), True)
-    if not is_available:
-        return False
-
-    # 2. 夜勤ルール
-    prev_shift = shift_draft[staff.id].get(date - timedelta(days=1))
-    if prev_shift == "夜" and shift_type != "明":
-        return False
-    
-    two_days_ago_shift = shift_draft[staff.id].get(date - timedelta(days=2))
-    if two_days_ago_shift == "夜" and shift_type != "休":
-        return False
-
-    if shift_type == "夜":
-        if staff.employment_type not in ["正規職員", "嘱託職員"]:
-            return False
-
-    # 3. 連勤チェック
-    if shift_type in WORK_SHIFTS and shift_type != '明':
-        consecutive_work = 0
-        for i in range(1, 5): 
-            if shift_draft[staff.id].get(date - timedelta(days=i)) in WORK_SHIFTS and shift_draft[staff.id].get(date - timedelta(days=i)) != '明':
-                consecutive_work += 1
-            else:
-                break
-        if consecutive_work >= 4:
-            return False
-
-    # 4. 公休数チェック
-    current_holidays = list(shift_draft[staff.id].values()).count("休")
-    remaining_slots = num_days - len(shift_draft[staff.id])
-    required_holidays = TARGET_HOLIDAYS - current_holidays
-    
-    if shift_type == "休" and current_holidays >= TARGET_HOLIDAYS:
-        return False
-    if shift_type in WORK_SHIFTS and remaining_slots < required_holidays:
-        return False
-    
-    # 5. 総労働時間チェック
-    max_hours = (num_days / 7) * 40
-    current_hours = sum(SHIFT_HOURS.get(s, 0) for s in shift_draft[staff.id].values())
-    if current_hours + SHIFT_HOURS.get(shift_type, 0) > max_hours: return False
-
-    # 6. 日ごとの必要人数チェック
-    if shift_type in WORK_SHIFTS:
-        date_str = date.isoformat()
-        required_count = required_staffing.get(date_str, {}).get(shift_type, 0)
-        
-        if required_count > 0:
-            current_count = sum(1 for sid in all_staff_ids if shift_draft[sid].get(date) == shift_type)
-            if current_count >= required_count:
-                return False
-    
-    # 7. 新人の単独勤務チェック
-    if staff.experience == "新人" and shift_type in WORK_SHIFTS:
-        is_someone_else_working = any(shift_draft[sid].get(date) in WORK_SHIFTS for sid in all_staff_ids if sid != staff.id)
-        if not is_someone_else_working:
-            return False
-
-    return True
-
-
-def solve_shift_puzzle(staff_list, dates_to_fill, shift_draft, num_days, required_staffing):
-    """バックトラッキングで再帰的に解を探す（スコアリング付き）"""
-    
-    if not dates_to_fill:
-        return True
-
-    date, staff = dates_to_fill[0]
-    remaining_dates = dates_to_fill[1:]
-    all_staff_ids = shift_draft.keys()
-
-    base_shifts = ["早", "日1", "日2", "中", "遅", "夜", "休", "明", "有"]
-    shift_scores = {shift: 0 for shift in base_shifts}
-
-    date_str = date.isoformat()
-    required_night_shift = required_staffing.get(date_str, {}).get("夜", 0)
-    if required_night_shift > 0 and sum(1 for sid in all_staff_ids if shift_draft[sid].get(date) == "夜") < required_night_shift:
-        night_counts = {sid: list(d.values()).count("夜") for sid, d in shift_draft.items()}
-        avg_nights = sum(night_counts.values()) / len(staff_list) if staff_list else 0
-        if night_counts.get(staff.id, 0) <= avg_nights:
-            shift_scores["夜"] += 10
-
-    day_of_week = date.weekday()
-    day_shift_types = ["日1", "日2", "中"]
-    if staff.gender == "男性":
-        if day_of_week == 0:
-            for s in day_shift_types: shift_scores[s] += 5
-        elif day_of_week == 1 or day_of_week == 4:
-            shift_scores["早"] += 5
-            for s in day_shift_types: shift_scores[s] += 5
-    elif staff.gender == "女性":
-        if day_of_week == 0 or day_of_week == 3:
-             for s in day_shift_types: shift_scores[s] += 5
-    
-    sorted_shifts = sorted(base_shifts, key=lambda s: shift_scores[s], reverse=True)
-
-    for shift_type in sorted_shifts:
-        if is_assignment_valid(staff, date, shift_type, shift_draft, num_days, required_staffing, all_staff_ids):
-            shift_draft[staff.id][date] = shift_type
-            if solve_shift_puzzle(staff_list, remaining_dates, shift_draft, num_days, required_staffing):
-                return True
-            del shift_draft[staff.id][date]
-
-    return False
-
-# 11. --- シフト自動作成API (POST) ---
+# 11. --- ★★★ シフト自動生成API (POST) ★★★ ---
 @app.route("/api/shifts/generate", methods=['POST'])
 def generate_shifts():
     data = request.get_json()
-    year, month = data.get('year'), data.get('month')
-    global TARGET_HOLIDAYS
-    TARGET_HOLIDAYS = data.get('targetHolidays', 8)
-    required_staffing = data.get('required_staffing', {})
-
-    if not year or not month: return jsonify({"error": "年と月の情報が必要です"}), 400
-    app.logger.info(f"シフト自動作成(v5)リクエスト受信: {year}年{month}月")
-
-    try:
-        all_staff = Staff.query.options(db.joinedload(Staff.availabilities)).order_by(Staff.id).all()
-        num_days = calendar.monthrange(year, month)[1]
-        start_date, end_date = DateObject(year, month, 1), DateObject(year, month, num_days)
-        prev_month_end = start_date - timedelta(days=1)
-        existing_shifts = Shift.query.filter(Shift.date.between(prev_month_end, end_date)).all()
-
-        shift_draft = {s.id: {} for s in all_staff}
-        for shift in existing_shifts:
-            if shift.staff_id in shift_draft:
-                shift_draft[shift.staff_id][shift.date] = shift.shift_type
-        
-        unassigned_slots = []
-        all_dates_in_month = [start_date + timedelta(days=i) for i in range(num_days)]
-        for date in all_dates_in_month:
-            for staff in all_staff:
-                if date not in shift_draft[staff.id]:
-                    unassigned_slots.append((date, staff))
-        
-        slot_options = {}
-        all_staff_ids = shift_draft.keys()
-        for date, staff in unassigned_slots:
-            count = 0
-            for shift_type in ["早", "日1", "日2", "中", "遅", "夜", "休"]:
-                if is_assignment_valid(staff, date, shift_type, shift_draft, num_days, required_staffing, all_staff_ids):
-                    count += 1
-            slot_options[(date, staff)] = count
-        
-        sorted_unassigned_slots = sorted(unassigned_slots, key=lambda slot: slot_options[slot])
-
-        app.logger.info(f"これから {len(sorted_unassigned_slots)} 個のマスを、選択肢の少ない順に埋めます。")
-        
-        success = solve_shift_puzzle(all_staff, sorted_unassigned_slots, shift_draft, num_days, required_staffing)
-
-        final_message = "シフトの自動作成が完了しました！"
-        if not success:
-            final_message = "シフトの自動作成を試みましたが、一部のルールを守れず未完成です。手動で調整してください。"
-        
-        Shift.query.filter(Shift.date.between(start_date, end_date)).delete(synchronize_session=False)
-        
-        new_shifts = []
-        for staff_id, date_shifts in shift_draft.items():
-            for date_obj, shift_type in date_shifts.items():
-                if date_obj.month == month and shift_type:
-                    new_shifts.append(Shift(staff_id=staff_id, date=date_obj, shift_type=shift_type, staff=next((s for s in all_staff if s.id == staff_id), None)))
-        
-        db.session.bulk_save_objects(new_shifts)
-        db.session.commit()
-        
-        return jsonify({
-            "message": final_message,
-            "generated_shifts": [s.to_dict() for s in new_shifts]
-        }), 200
-
-    except Exception as e:
-        db.session.rollback()
-        import traceback
-        traceback.print_exc()
-        return jsonify({"error": "シフトの自動作成中に予期せぬエラーが発生しました。"}), 500
-
-# 12. --- 月間シフト全削除API (POST) ---
-@app.route("/api/shifts/clear", methods=['POST'])
-def clear_all_shifts():
-    data = request.get_json()
     year = data.get('year')
     month = data.get('month')
+    required_staffing = data.get('required_staffing', {}) # 日付ごとの必要人数
+    shift_types = data.get('shift_types', ['A', 'B', 'C', 'Off']) # 'Off'もシフトの一種として扱う
 
     if not year or not month:
-        return jsonify({"error": "年と月の情報が必要です"}), 400
+        return jsonify({"error": "yearとmonthは必須です"}), 400
 
     try:
-        num_days = calendar.monthrange(year, month)[1]
-        start_date = DateObject(year, month, 1)
-        end_date = DateObject(year, month, num_days)
+        # --- 準備 ---
+        all_staff = Staff.query.all()
+        all_staff_ids = [s.id for s in all_staff]
+        
+        # スタッフの勤務希望を使いやすい形に変換しておく
+        availabilities = {}
+        for staff in all_staff:
+            availabilities[staff.id] = {}
+            #曜日(day_of_week)とシフトタイプ(shift_type)をキーにした辞書を作成
+            for av in staff.availabilities:
+                if av.day_of_week not in availabilities[staff.id]:
+                    availabilities[staff.id][av.day_of_week] = {}
+                availabilities[staff.id][av.day_of_week][av.shift_type] = av.is_available
 
-        deleted_count = Shift.query.filter(
-            Shift.date.between(start_date, end_date)
-        ).delete(synchronize_session=False)
+        # --- シフト作成処理 ---
+        shift_draft = {staff_id: {} for staff_id in all_staff_ids} # {staff_id: {date: shift_type}}
         
-        db.session.commit()
-        
-        app.logger.info(f"{year}年{month}月のシフトを {deleted_count} 件削除しました。")
-        return jsonify({"message": f"{year}年{month}月の全シフトをクリアしました。"}), 200
+        start_date = DateObject(year, month, 1)
+        # 月の最終日を計算
+        end_date = (start_date.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+
+        # 1日から最終日までループ
+        current_date = start_date
+        while current_date <= end_date:
+            # 曜日を取得 (0=月曜日, 6=日曜日 -> 1=月曜日, 0=日曜日に変換)
+            day_of_week = (current_date.weekday() + 1) % 7
+            
+            # その日にまだシフトが割り当てられていないスタッフをシャッフルして、不公平感をなくす
+            unassigned_staff_ids = list(all_staff_ids)
+            random.shuffle(unassigned_staff_ids)
+
+            for staff_id in unassigned_staff_ids:
+                # --- 各スタッフの、その日の各シフトの「良さ」を点数付けする ---
+                shift_scores = {st: 0 for st in shift_types}
+
+                # 1. 勤務希望の反映
+                for shift_type, score in shift_scores.items():
+                    # 休み希望('Off')は勤務希望設定にはないので特別扱い
+                    if shift_type == 'Off':
+                        # 休み希望の日なら点数を高くする
+                        if availabilities.get(staff_id, {}).get(day_of_week, {}).get(shift_type, False):
+                           shift_scores[shift_type] += 50
+                        continue
+
+                    # 勤務希望があるかチェック
+                    is_available = availabilities.get(staff_id, {}).get(day_of_week, {}).get(shift_type, False)
+                    if is_available:
+                        shift_scores[shift_type] += 10 # 勤務希望ならプラス10点
+                    else:
+                        shift_scores[shift_type] -= 1000 # 勤務不可なら絶対に入らないようにマイナス1000点
+
+                # 2. 連勤ペナルティ (例: 5連勤以上は避ける)
+                consecutive_work_days = 0
+                for i in range(1, 6):
+                    prev_date = current_date - timedelta(days=i)
+                    if shift_draft[staff_id].get(prev_date, 'Off') != 'Off':
+                        consecutive_work_days += 1
+                    else:
+                        break
+                if consecutive_work_days >= 4:
+                    shift_scores['Off'] += 20 * (consecutive_work_days - 3) # 休みへのボーナス
+
+                # ★★★ ここからが新しいコードだよ！ ★★★
+                # 日ごとの必要人数を優先するためのボーナスポイントだよ！
+                date_str = current_date.isoformat()
+                if date_str in required_staffing:
+                    for shift_type, required_count in required_staffing[date_str].items():
+                        if required_count > 0:
+                            # 今、そのシフトに何人入っているか数えるよ
+                            current_count = sum(1 for sid in all_staff_ids if shift_draft[sid].get(current_date) == shift_type)
+                            
+                            # もし必要人数より少なかったら、そのシフトの点数をグーンと上げるんだ！
+                            if current_count < required_count:
+                                # 足りない人数が多ければ多いほど、もっと点数を高くするよ
+                                shortage = required_count - current_count
+                                if shift_type in shift_scores:
+                                    shift_scores[shift_type] += 100 * shortage # 100点は大きなボーナスだね！
+                # ★★★ ここまでが新しいコードだよ！ ★★★
+
+                # --- 点数が最も高いシフトを割り当てる ---
+                # 点数が高い順に並び替え
+                sorted_shifts = sorted(shift_scores.items(), key=lambda item: item[1], reverse=True)
+                
+                # 最高点のシフトを割り当て
+                best_shift = sorted_shifts[0][0]
+                shift_draft[staff_id][current_date] = best_shift
+
+            current_date += timedelta(days=1)
+
+        # --- 作成したシフト下書きを、フロントエンドが使いやすい形式に変換 ---
+        final_shifts = []
+        for staff_id, date_shifts in shift_draft.items():
+            for date, shift_type in date_shifts.items():
+                if shift_type != 'Off': # 休みはシフトとして表示しない
+                    final_shifts.append({
+                        "id": f"draft_{staff_id}_{date.isoformat()}", # 仮のID
+                        "staff_id": staff_id,
+                        "date": date.isoformat(),
+                        "shift_type": shift_type,
+                        "notes": "自動生成"
+                    })
+
+        return jsonify({"generated_shifts": final_shifts}), 200
 
     except Exception as e:
-        db.session.rollback()
-        app.logger.error(f"シフトの全削除中にエラーが発生: {e}")
-        return jsonify({"error": "シフトのクリア中にエラーが発生しました。"}), 500
+        app.logger.error(f"Shift generation failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"シフトの自動生成に失敗しました: {e}"}), 500
+
+# --- アプリケーションの実行 ---
+if __name__ == '__main__':
+    # RenderはGunicornなどのWSGIサーバーを使うので、この部分はローカル開発用
+    app.run(debug=True, port=os.environ.get('PORT', 5001))
