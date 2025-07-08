@@ -397,30 +397,40 @@ def generate_shifts():
                 if consecutive_work_days >= 4:
                     shift_scores['Off'] += 20 * (consecutive_work_days - 3) # 休みへのボーナス
 
-                # ★★★ ここからが新しいコードだよ！ ★★★
-                # 日ごとの必要人数を優先するためのボーナスポイントだよ！
+                # 3. 日ごとの必要人数を優先するためのボーナスポイント
                 date_str = current_date.isoformat()
                 if date_str in required_staffing:
                     for shift_type, required_count in required_staffing[date_str].items():
                         if required_count > 0:
-                            # 今、そのシフトに何人入っているか数えるよ
+                            # 今、そのシフトに何人入っているか数える
                             current_count = sum(1 for sid in all_staff_ids if shift_draft[sid].get(current_date) == shift_type)
                             
-                            # もし必要人数より少なかったら、そのシフトの点数をグーンと上げるんだ！
+                            # もし必要人数より少なかったら、そのシフトの点数を上げる
                             if current_count < required_count:
-                                # 足りない人数が多ければ多いほど、もっと点数を高くするよ
                                 shortage = required_count - current_count
                                 if shift_type in shift_scores:
-                                    shift_scores[shift_type] += 100 * shortage # 100点は大きなボーナスだね！
-                # ★★★ ここまでが新しいコードだよ！ ★★★
+                                    shift_scores[shift_type] += 100 * shortage # 不足人数が多いほど高得点
 
                 # --- 点数が最も高いシフトを割り当てる ---
-                # 点数が高い順に並び替え
-                sorted_shifts = sorted(shift_scores.items(), key=lambda item: item[1], reverse=True)
+                # ↓↓↓★ここからが修正・追加したコードだよ！★↓↓↓
+                # 点数が同じ場合のランダム性を確保するため、まずリストをシャッフル！
+                base_shifts = list(shift_scores.keys())
+                random.shuffle(base_shifts)
+                # その後で、点数順に並び替え！
+                sorted_shifts = sorted(base_shifts, key=lambda s: shift_scores[s], reverse=True)
+
+                # 有効なシフトの中から、点数が最も高いものを探して割り当てる
+                assigned = False
+                for shift_type in sorted_shifts:
+                    # 勤務不可（スコアが極端に低い）でないことを確認する
+                    if shift_scores[shift_type] > -500:
+                        shift_draft[staff_id][current_date] = shift_type
+                        assigned = True
+                        break # 割り当てたらループを抜ける
                 
-                # 最高点のシフトを割り当て
-                best_shift = sorted_shifts[0][0]
-                shift_draft[staff_id][current_date] = best_shift
+                # もし割り当てられるシフトが一つもなければ、安全のために休みにする
+                if not assigned:
+                    shift_draft[staff_id][current_date] = 'Off'
 
             current_date += timedelta(days=1)
 
