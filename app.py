@@ -470,8 +470,6 @@ def generate_shifts():
     TARGET_HOLIDAYS = data.get('targetHolidays', 8)
     required_staffing = data.get('required_staffing', {})
 
-    print(f"★★★ 受け取った必要人数データ ★★★: {required_staffing}")
-
     if not year or not month: return jsonify({"error": "年と月の情報が必要です"}), 400
     app.logger.info(f"シフト自動作成リクエスト受信: {year}年{month}月")
 
