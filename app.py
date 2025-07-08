@@ -515,6 +515,10 @@ def generate_shifts():
         # 選択肢の少ない順にソート
         sorted_unassigned_slots = sorted(unassigned_slots, key=lambda slot: slot_options_count[slot])
 
+                # ↓↓↓★ここに、この2行を追加してみて！★↓↓↓
+        print(f"★★★【準備室チェック】これから {len(sorted_unassigned_slots)} 個のマスを埋めます。★★★")
+        print(f"埋めるマスのリスト（最初の5個だけ）: {sorted_unassigned_slots[:5]}")
+
         app.logger.info(f"これから {len(sorted_unassigned_slots)} 個のマスを、選択肢の少ない順に埋めます。")
         
         # --- バックトラッキング実行 ---
