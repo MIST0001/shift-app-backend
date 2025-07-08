@@ -377,15 +377,15 @@ def is_assignment_valid(staff, date, shift_type, shift_draft, num_days, required
             return False
 
     # 4. 公休数チェック
-    current_holidays = list(shift_draft[staff.id].values()).count("休")
+    # current_holidays = list(shift_draft[staff.id].values()).count("休")
     # 月の残りの日数
-    remaining_days = num_days - date.day + 1
-    required_holidays = TARGET_HOLIDAYS - current_holidays
+    # remaining_days = num_days - date.day + 1
+    # required_holidays = TARGET_HOLIDAYS - current_holidays
     
-    if shift_type == "休" and current_holidays >= TARGET_HOLIDAYS:
-        return False # 既に目標公休数に達していたら、もう休まない
-    if shift_type != "休" and remaining_days < required_holidays:
-        return False # 残り日数が必要公休数より少ない場合、必ず休みにする
+    # if shift_type == "休" and current_holidays >= TARGET_HOLIDAYS:
+    #     return False # 既に目標公休数に達していたら、もう休まない
+    # if shift_type != "休" and remaining_days < required_holidays:
+    #     return False # 残り日数が必要公休数より少ない場合、必ず休みにする
     
     # 5. 日ごとの必要人数チェック
     #if shift_type in work_shifts:
@@ -445,6 +445,12 @@ def solve_shift_puzzle(staff_list, dates_to_fill, shift_draft, num_days, require
                  shift_scores[availability.shift_type] += 10 # 希望のシフトは+10点
             else:
                  shift_scores[availability.shift_type] -= 1000 # 不可のシフトは入れない
+
+    # 3. 休日取得のボーナス
+    current_holidays = list(shift_draft[staff.id].values()).count("休")
+    if current_holidays < TARGET_HOLIDAYS:
+        # 目標の公休数に達していないスタッフには、「休」にボーナスポイントをあげる！
+        shift_scores['休'] += 50 
 
     # --- 割り当て実行 ---
     # 点数が同じ場合のランダム性を確保するため、まずリストをシャッフル
