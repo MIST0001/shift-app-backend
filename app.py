@@ -332,7 +332,7 @@ def update_staff_availabilities(staff_id):
         return jsonify({"error": "設定の更新に失敗しました。"}), 500
 
 # =================================================================
-# --- ★★★ シフト自動作成 バックトラッキング版 ★★★ ---
+# --- ★★★ シフト自動作成 ★★★ ---
 # =================================================================
 
 def is_assignment_valid(staff, date, shift_type, shift_draft, num_days, required_staffing, all_staff_ids, TARGET_HOLIDAYS):
@@ -413,80 +413,88 @@ def is_assignment_valid(staff, date, shift_type, shift_draft, num_days, required
 
 
 # ▼▼▼【ここを修正】▼▼▼
-def solve_shift_puzzle(staff_list, dates_to_fill, shift_draft, num_days, required_staffing, TARGET_HOLIDAYS, target_avg_hours, depth=0):
-    """バックトラッキングで再帰的に解を探す（最終調整版）"""
-    
-    if not dates_to_fill:
-        return True 
-
-    (date, staff), *remaining_dates = dates_to_fill
+def solve_shift_puzzle(staff_list, dates_to_fill, shift_draft, num_days, required_staffing, TARGET_HOLIDAYS, target_avg_hours):
+    """
+    貪欲法(Greedy Algorithm)を用いてシフトを生成する。
+    バックトラッキング（再帰的な深掘りと手戻り）の代わりに、各マスに対してルール上可能で最も良い選択肢をその場で決定していく。
+    これにより、計算時間が大幅に短縮され、複雑なシフトでも現実的な時間で結果を出力できる。
+    ただし、局所最適な選択を繰り返すため、必ずしも全体として最適な解や、実行可能な解（全てのマスが埋まる解）が得られるとは限らない。
+    """
     all_staff_ids = list(shift_draft.keys())
-    indent = "  " * depth
-
-    print(f"{indent}---【探索開始 D:{depth}】---")
-    print(f"{indent}日付: {date}, スタッフ: {staff.name}")
-
-    # --- 割り当て候補のスコアリング ---
-    base_shifts = ["早", "日1", "日2", "中", "遅", "夜", "休", "明"]
-    shift_scores = {shift: 0 for shift in base_shifts}
-    work_shifts = ["早", "日1", "日2", "中", "遅", "夜"]
+    unassigned_count = 0
+    total_slots = len(dates_to_fill)
     
-    # 1. 緊急出勤ボーナス
-    date_str = date.isoformat()
-    if date_str in required_staffing:
-        for shift_type, required_count in required_staffing[date_str].items():
-            if required_count > 0 and shift_type in shift_scores:
-                current_count = sum(1 for sid in all_staff_ids if shift_draft[sid].get(date) == shift_type)
-                if current_count < required_count:
-                    shortage = required_count - current_count
-                    # 緊急度に応じてボーナスを大幅に引き上げる
-                    shift_scores[shift_type] += 200 * shortage
+    app.logger.info(f"貪欲法によるシフト生成を開始します。対象スロット数: {total_slots}")
 
-    # 2. 勤務希望にボーナス/ペナルティ
-    day_of_week_py = date.weekday()
-    day_of_week_db = (day_of_week_py + 1) % 7
-    for availability in staff.availabilities:
-        if availability.day_of_week == day_of_week_db and availability.shift_type in shift_scores:
-            if availability.is_available:
-                 shift_scores[availability.shift_type] += 10
-            else:
-                 shift_scores[availability.shift_type] -= 1000
+    # 予めソートされた「埋めるべきマス」のリストを順番に処理していく
+    for i, (date, staff) in enumerate(dates_to_fill):
 
-    # 3. 休日取得のボーナス
-    current_holidays = list(shift_draft[staff.id].values()).count("休")
-    if current_holidays < TARGET_HOLIDAYS:
-        shift_scores['休'] += 50 
+        # --- 各シフトの選択肢をスコアリングする ---
+        base_shifts = ["早", "日1", "日2", "中", "遅", "夜", "休", "明"]
+        work_shifts = ["早", "日1", "日2", "中", "遅", "夜"]
+        shift_scores = {shift: 0 for shift in base_shifts}
+        
+        # 1. 緊急出勤ボーナス: 人員が不足しているシフトは優先度を上げる
+        date_str = date.isoformat()
+        if date_str in required_staffing:
+            for shift_type, required_count in required_staffing[date_str].items():
+                if required_count > 0 and shift_type in shift_scores:
+                    current_count = sum(1 for sid in all_staff_ids if shift_draft[sid].get(date) == shift_type)
+                    if current_count < required_count:
+                        shortage = required_count - current_count
+                        shift_scores[shift_type] += 200 * shortage # 不足人数に応じてスコアを大幅に加算
+
+        # 2. 勤務希望ボーナス/ペナルティ
+        day_of_week_py = date.weekday()
+        day_of_week_db = (day_of_week_py + 1) % 7
+        for availability in staff.availabilities:
+            if availability.day_of_week == day_of_week_db and availability.shift_type in shift_scores:
+                if availability.is_available:
+                     shift_scores[availability.shift_type] += 10 # 希望には少しボーナス
+                else:
+                     # 希望しないシフトは事実上選択されないように大きなペナルティ
+                     shift_scores[availability.shift_type] -= 1000
+
+        # 3. 休日取得ボーナス: 目標公休数に達するまで「休」を優先
+        current_holidays = list(shift_draft[staff.id].values()).count("休")
+        if current_holidays < TARGET_HOLIDAYS:
+            shift_scores['休'] += 50
+        
+        # 4. 労働時間の平準化: 目標労働時間を超えている場合、勤務にペナルティ
+        SHIFT_HOURS = {"早": 8, "日1": 8, "日2": 8, "中": 8, "遅": 8, "夜": 16, "明": 0, "休": 0}
+        current_hours = sum(SHIFT_HOURS.get(st, 0) for st in shift_draft[staff.id].values())
+        if current_hours > target_avg_hours:
+            penalty_point = ((current_hours - target_avg_hours) / 8) * 10
+            for shift_type in work_shifts:
+                if shift_type in shift_scores:
+                    shift_scores[shift_type] -= penalty_point
+
+        # --- 割り当て実行 ---
+        # 候補をスコア順にソート。スコアが同じ場合の偏りをなくすため、元のリストをシャッフル
+        random.shuffle(base_shifts)
+        sorted_shifts = sorted(base_shifts, key=lambda s: shift_scores.get(s, 0), reverse=True)
+
+        assigned = False
+        for shift_type in sorted_shifts:
+            # is_assignment_validでルール違反がないかチェック
+            if is_assignment_valid(staff, date, shift_type, shift_draft, num_days, required_staffing, all_staff_ids, TARGET_HOLIDAYS):
+                # ルールOKなシフトが見つかったら、それを割り当ててループを抜ける (貪欲な選択)
+                shift_draft[staff.id][date] = shift_type
+                assigned = True
+                break # このマスはこれで確定
+        
+        if not assigned:
+            # どのシフトもルール上割り当てられなかった場合
+            unassigned_count += 1
+            app.logger.warning(f"割当不可: {staff.name} on {date}。有効なシフトが見つかりませんでした。")
     
-    # 4. 労働時間の平準化（ペナルティ方式）
-    SHIFT_HOURS = {"早": 8, "日1": 8, "日2": 8, "中": 8, "遅": 8, "夜": 16, "明": 0, "休": 0}
-    current_hours = sum(SHIFT_HOURS.get(st, 0) for st in shift_draft[staff.id].values())
-    
-    # 目標時間を超えている場合、勤務シフトにペナルティを与える
-    if current_hours > target_avg_hours:
-        penalty_point = (current_hours - target_avg_hours) / 8 * 10 # 8時間超過あたり10ポイントのペナルティ
-        for shift_type in work_shifts:
-            if shift_type in shift_scores:
-                shift_scores[shift_type] -= penalty_point
-    
-    print(f"{indent}スコア: {shift_scores}")
+    if unassigned_count > 0:
+        app.logger.warning(f"シフト生成完了。ただし、{unassigned_count}個のスロットが未割り当てです。")
+    else:
+        app.logger.info("全てのシフトが正常に割り当てられました。")
 
-    # --- 割り当て実行 ---
-    random.shuffle(base_shifts)
-    sorted_shifts = sorted(base_shifts, key=lambda s: shift_scores[s], reverse=True)
-
-    for shift_type in sorted_shifts:
-        if is_assignment_valid(staff, date, shift_type, shift_draft, num_days, required_staffing, all_staff_ids, TARGET_HOLIDAYS):
-            shift_draft[staff.id][date] = shift_type
-            print(f"{indent} -> 試行: {staff.name} に [{shift_type}] を割り当て")
-
-            if solve_shift_puzzle(staff_list, remaining_dates, shift_draft, num_days, required_staffing, TARGET_HOLIDAYS, target_avg_hours, depth + 1):
-                return True
-            
-            print(f"{indent} <- 失敗: [{shift_type}] を取り消し")
-            del shift_draft[staff.id][date]
-
-    print(f"{indent}!!! 行き詰まり D:{depth} - 日付: {date}, スタッフ: {staff.name} !!!")
-    return False
+    # 全てのスロットが埋まった場合のみTrueを返す
+    return unassigned_count == 0
 # ▲▲▲【修正ここまで】▲▲▲
 
 
@@ -556,7 +564,7 @@ def generate_shifts():
 
         app.logger.info(f"これから {len(sorted_unassigned_slots)} 個のマスを、選択肢の少ない順・重要度の高い順に埋めます。")
         
-        # --- バックトラッキング実行 ---
+        # --- 貪欲法によるシフト作成実行 ---
         success = solve_shift_puzzle(all_staff, sorted_unassigned_slots, shift_draft, num_days, required_staffing, TARGET_HOLIDAYS, target_avg_hours)
 
         # --- 結果をDBに保存 ---
