@@ -407,7 +407,6 @@ def is_assignment_valid(staff, date, shift_type, shift_draft, num_days, required
     return True
 
 
-# ▼▼▼【ここを修正】▼▼▼
 def solve_shift_puzzle(staff_list, dates_to_fill, shift_draft, num_days, required_staffing, TARGET_HOLIDAYS, depth=0):
     """バックトラッキングで再帰的に解を探す（デバッグ出力強化版）"""
     
@@ -475,7 +474,6 @@ def solve_shift_puzzle(staff_list, dates_to_fill, shift_draft, num_days, require
     # --- どの選択肢もダメだった場合 ---
     print(f"{indent}!!! 行き詰まり D:{depth} - 日付: {date}, スタッフ: {staff.name} !!!")
     return False
-# ▲▲▲【修正ここまで】▲▲▲
 
 
 @app.route("/api/shifts/generate", methods=['POST'])
@@ -513,21 +511,36 @@ def generate_shifts():
                 if date not in shift_draft[staff.id]:
                     unassigned_slots.append((date, staff))
         
+        # ▼▼▼【ここを修正】▼▼▼
         # --- 最も制約の厳しいマスから埋める (Most Constrained Variable) ---
-        slot_options_count = {}
+        slot_metrics = {}
         all_staff_ids = list(shift_draft.keys())
         shift_types_to_check = ["早", "日1", "日2", "中", "遅", "夜", "休", "明", "有"]
+        
         for date, staff in unassigned_slots:
-            count = 0
+            # 1. 選択肢の数を計算
+            option_count = 0
             for shift_type in shift_types_to_check:
                 if is_assignment_valid(staff, date, shift_type, shift_draft, num_days, required_staffing, all_staff_ids, TARGET_HOLIDAYS):
-                    count += 1
-            slot_options_count[(date, staff)] = count
-        
-        # 選択肢の少ない順にソート
-        sorted_unassigned_slots = sorted(unassigned_slots, key=lambda slot: slot_options_count[slot])
+                    option_count += 1
 
-        app.logger.info(f"これから {len(sorted_unassigned_slots)} 個のマスを、選択肢の少ない順に埋めます。")
+            # 2. マスの重要度（インパクト）を計算
+            # 月末に近いほど、休日確保の重要度が増す
+            day_impact = date.day 
+            
+            # 必要人数が多い日ほど、制約が厳しい
+            date_str = date.isoformat()
+            required_sum = sum(required_staffing.get(date_str, {}).values())
+            
+            # 最終的なメトリックを計算 (選択肢が少なく、インパクトが大きいものを優先)
+            metric = (option_count, -day_impact, -required_sum)
+            slot_metrics[(date, staff)] = metric
+        
+        # 選択肢の少なさ(昇順)、次にインパクトの大きさ(降順)でソート
+        sorted_unassigned_slots = sorted(unassigned_slots, key=lambda slot: slot_metrics[slot])
+        # ▲▲▲【修正ここまで】▲▲▲
+
+        app.logger.info(f"これから {len(sorted_unassigned_slots)} 個のマスを、選択肢の少ない順・重要度の高い順に埋めます。")
         
         # --- バックトラッキング実行 ---
         # 修正された関数を呼び出す（depthはデフォルトで0が使われる）
