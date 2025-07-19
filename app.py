@@ -411,91 +411,153 @@ def is_assignment_valid(staff, date, shift_type, shift_draft, num_days, required
 
     return True
 
+def solve_shift_puzzle(staff_list, dates_to_fill, shift_draft, num_days, required_staffing, TARGET_HOLIDAYS, target_avg_hours, depth=0):
+    """バックトラッキングで再帰的に解を探す（最終調整版）"""
+    
+    if not dates_to_fill:
+        return True 
 
-# ▼▼▼【ここを修正】▼▼▼
-def solve_shift_puzzle(staff_list, dates_to_fill, shift_draft, num_days, required_staffing, TARGET_HOLIDAYS, target_avg_hours):
-    """
-    貪欲法(Greedy Algorithm)を用いてシフトを生成する。
-    バックトラッキング（再帰的な深掘りと手戻り）の代わりに、各マスに対してルール上可能で最も良い選択肢をその場で決定していく。
-    これにより、計算時間が大幅に短縮され、複雑なシフトでも現実的な時間で結果を出力できる。
-    ただし、局所最適な選択を繰り返すため、必ずしも全体として最適な解や、実行可能な解（全てのマスが埋まる解）が得られるとは限らない。
-    """
+    (date, staff), *remaining_dates = dates_to_fill
     all_staff_ids = list(shift_draft.keys())
-    unassigned_count = 0
-    total_slots = len(dates_to_fill)
+    indent = "  " * depth
+
+    print(f"{indent}---【探索開始 D:{depth}】---")
+    print(f"{indent}日付: {date}, スタッフ: {staff.name}")
+
+    # --- 割り当て候補のスコアリング ---
+    base_shifts = ["早", "日1", "日2", "中", "遅", "夜", "休", "明"]
+    shift_scores = {shift: 0 for shift in base_shifts}
+    work_shifts = ["早", "日1", "日2", "中", "遅", "夜"]
     
-    app.logger.info(f"貪欲法によるシフト生成を開始します。対象スロット数: {total_slots}")
+    # 1. 緊急出勤ボーナス
+    date_str = date.isoformat()
+    if date_str in required_staffing:
+        for shift_type, required_count in required_staffing[date_str].items():
+            if required_count > 0 and shift_type in shift_scores:
+                current_count = sum(1 for sid in all_staff_ids if shift_draft[sid].get(date) == shift_type)
+                if current_count < required_count:
+                    shortage = required_count - current_count
+                    # 緊急度に応じてボーナスを大幅に引き上げる
+                    shift_scores[shift_type] += 200 * shortage
 
-    # 予めソートされた「埋めるべきマス」のリストを順番に処理していく
-    for i, (date, staff) in enumerate(dates_to_fill):
+    # 2. 勤務希望にボーナス/ペナルティ
+    day_of_week_py = date.weekday()
+    day_of_week_db = (day_of_week_py + 1) % 7
+    for availability in staff.availabilities:
+        if availability.day_of_week == day_of_week_db and availability.shift_type in shift_scores:
+            if availability.is_available:
+                 shift_scores[availability.shift_type] += 10
+            else:
+                 shift_scores[availability.shift_type] -= 1000
 
-        # --- 各シフトの選択肢をスコアリングする ---
-        base_shifts = ["早", "日1", "日2", "中", "遅", "夜", "休", "明"]
-        work_shifts = ["早", "日1", "日2", "中", "遅", "夜"]
-        shift_scores = {shift: 0 for shift in base_shifts}
-        
-        # 1. 緊急出勤ボーナス: 人員が不足しているシフトは優先度を上げる
-        date_str = date.isoformat()
-        if date_str in required_staffing:
-            for shift_type, required_count in required_staffing[date_str].items():
-                if required_count > 0 and shift_type in shift_scores:
-                    current_count = sum(1 for sid in all_staff_ids if shift_draft[sid].get(date) == shift_type)
-                    if current_count < required_count:
-                        shortage = required_count - current_count
-                        shift_scores[shift_type] += 200 * shortage # 不足人数に応じてスコアを大幅に加算
-
-        # 2. 勤務希望ボーナス/ペナルティ
-        day_of_week_py = date.weekday()
-        day_of_week_db = (day_of_week_py + 1) % 7
-        for availability in staff.availabilities:
-            if availability.day_of_week == day_of_week_db and availability.shift_type in shift_scores:
-                if availability.is_available:
-                     shift_scores[availability.shift_type] += 10 # 希望には少しボーナス
-                else:
-                     # 希望しないシフトは事実上選択されないように大きなペナルティ
-                     shift_scores[availability.shift_type] -= 1000
-
-        # 3. 休日取得ボーナス: 目標公休数に達するまで「休」を優先
-        current_holidays = list(shift_draft[staff.id].values()).count("休")
-        if current_holidays < TARGET_HOLIDAYS:
-            shift_scores['休'] += 50
-        
-        # 4. 労働時間の平準化: 目標労働時間を超えている場合、勤務にペナルティ
-        SHIFT_HOURS = {"早": 8, "日1": 8, "日2": 8, "中": 8, "遅": 8, "夜": 16, "明": 0, "休": 0}
-        current_hours = sum(SHIFT_HOURS.get(st, 0) for st in shift_draft[staff.id].values())
-        if current_hours > target_avg_hours:
-            penalty_point = ((current_hours - target_avg_hours) / 8) * 10
-            for shift_type in work_shifts:
-                if shift_type in shift_scores:
-                    shift_scores[shift_type] -= penalty_point
-
-        # --- 割り当て実行 ---
-        # 候補をスコア順にソート。スコアが同じ場合の偏りをなくすため、元のリストをシャッフル
-        random.shuffle(base_shifts)
-        sorted_shifts = sorted(base_shifts, key=lambda s: shift_scores.get(s, 0), reverse=True)
-
-        assigned = False
-        for shift_type in sorted_shifts:
-            # is_assignment_validでルール違反がないかチェック
-            if is_assignment_valid(staff, date, shift_type, shift_draft, num_days, required_staffing, all_staff_ids, TARGET_HOLIDAYS):
-                # ルールOKなシフトが見つかったら、それを割り当ててループを抜ける (貪欲な選択)
-                shift_draft[staff.id][date] = shift_type
-                assigned = True
-                break # このマスはこれで確定
-        
-        if not assigned:
-            # どのシフトもルール上割り当てられなかった場合
-            unassigned_count += 1
-            app.logger.warning(f"割当不可: {staff.name} on {date}。有効なシフトが見つかりませんでした。")
+    # 3. 休日取得のボーナス
+    current_holidays = list(shift_draft[staff.id].values()).count("休")
+    if current_holidays < TARGET_HOLIDAYS:
+        shift_scores['休'] += 50 
     
-    if unassigned_count > 0:
-        app.logger.warning(f"シフト生成完了。ただし、{unassigned_count}個のスロットが未割り当てです。")
-    else:
-        app.logger.info("全てのシフトが正常に割り当てられました。")
+    # 4. 労働時間の平準化（ペナルティ方式）
+    SHIFT_HOURS = {"早": 8, "日1": 8, "日2": 8, "中": 8, "遅": 8, "夜": 16, "明": 0, "休": 0}
+    current_hours = sum(SHIFT_HOURS.get(st, 0) for st in shift_draft[staff.id].values())
+    
+    # 目標時間を超えている場合、勤務シフトにペナルティを与える
+    if current_hours > target_avg_hours:
+        penalty_point = (current_hours - target_avg_hours) / 8 * 10 # 8時間超過あたり10ポイントのペナルティ
+        for shift_type in work_shifts:
+            if shift_type in shift_scores:
+                shift_scores[shift_type] -= penalty_point
+    
+    print(f"{indent}スコア: {shift_scores}")
 
-    # 全てのスロットが埋まった場合のみTrueを返す
-    return unassigned_count == 0
-# ▲▲▲【修正ここまで】▲▲▲
+    # --- 割り当て実行 ---
+    random.shuffle(base_shifts)
+    sorted_shifts = sorted(base_shifts, key=lambda s: shift_scores[s], reverse=True)
+
+    for shift_type in sorted_shifts:
+        if is_assignment_valid(staff, date, shift_type, shift_draft, num_days, required_staffing, all_staff_ids, TARGET_HOLIDAYS):
+            shift_draft[staff.id][date] = shift_type
+            print(f"{indent} -> 試行: {staff.name} に [{shift_type}] を割り当て")
+
+            if solve_shift_puzzle(staff_list, remaining_dates, shift_draft, num_days, required_staffing, TARGET_HOLIDAYS, target_avg_hours, depth + 1):
+                return True
+            
+            print(f"{indent} <- 失敗: [{shift_type}] を取り消し")
+            del shift_draft[staff.id][date]
+
+    print(f"{indent}!!! 行き詰まり D:{depth} - 日付: {date}, スタッフ: {staff.name} !!!")
+    return False
+
+# ▼▼▼【ここから新規関数】▼▼▼
+def assign_night_shift_sets(shift_draft, all_staff, start_date, end_date, num_days, required_staffing):
+    """「夜勤→明け→休み」の3連続セットを優先的に割り当てる"""
+    app.logger.info("フェーズ1: 夜勤セットの事前割り当てを開始")
+    
+    night_shift_staff = [s for s in all_staff if s.employment_type in ["正規職員", "嘱託職員"]]
+    if not night_shift_staff:
+        app.logger.info("夜勤可能なスタッフがいないため、事前割り当てをスキップします。")
+        return
+
+    # --- 前月からの夜勤引き継ぎ処理 ---
+    for staff in night_shift_staff:
+        prev_day_shift = shift_draft[staff.id].get(start_date - timedelta(days=1))
+        two_days_ago_shift = shift_draft[staff.id].get(start_date - timedelta(days=2))
+
+        # 前日が夜勤の場合
+        if prev_day_shift == "夜":
+            if start_date <= end_date: shift_draft[staff.id][start_date] = "明"
+            if start_date + timedelta(days=1) <= end_date: shift_draft[staff.id][start_date + timedelta(days=1)] = "休"
+            app.logger.info(f"前月からの引き継ぎ: {staff.name}の{start_date.day}日, {start_date.day+1}日に「明」「休」をセット")
+
+        # 2日前が夜勤で前日が明けの場合
+        elif two_days_ago_shift == "夜" and prev_day_shift == "明":
+            if start_date <= end_date: shift_draft[staff.id][start_date] = "休"
+            app.logger.info(f"前月からの引き継ぎ: {staff.name}の{start_date.day}日に「休」をセット")
+
+    # --- 当該月の夜勤セット割り当て ---
+    all_dates = [start_date + timedelta(days=i) for i in range(num_days)]
+    
+    for date in all_dates:
+        # その日の夜勤必要人数を取得
+        required_night_count = required_staffing.get(date.isoformat(), {}).get("夜", 0)
+        if required_night_count == 0:
+            continue
+
+        # 現在の夜勤人数
+        current_night_count = sum(1 for sid in shift_draft if shift_draft[sid].get(date) == "夜")
+
+        # 必要人数に達するまで夜勤を割り当てる
+        while current_night_count < required_night_count:
+            # 候補者を探す: その日にまだシフトがなく、3日間空いているスタッフ
+            candidates = []
+            random.shuffle(night_shift_staff) # 毎回同じ人にならないようにシャッフル
+            for staff in night_shift_staff:
+                # 3日間（夜、明、休）が空いているかチェック
+                is_available = True
+                for i in range(3):
+                    d = date + timedelta(days=i)
+                    if d > end_date or shift_draft[staff.id].get(d) is not None:
+                        is_available = False
+                        break
+                
+                if is_available:
+                    candidates.append(staff)
+            
+            if not candidates:
+                app.logger.warning(f"{date}の夜勤セットを割り当てる候補者が見つかりませんでした。")
+                break # 候補者がいなければ次の日へ
+
+            # 候補者の中から一人選んで割り当て（ここでは単純に最初の候補者）
+            target_staff = candidates[0]
+            shift_draft[target_staff.id][date] = "夜"
+            if date + timedelta(days=1) <= end_date:
+                shift_draft[target_staff.id][date + timedelta(days=1)] = "明"
+            if date + timedelta(days=2) <= end_date:
+                shift_draft[target_staff.id][date + timedelta(days=2)] = "休"
+            app.logger.info(f"{target_staff.name}の{date.day}日から「夜→明→休」をセット")
+
+            current_night_count += 1
+            
+    app.logger.info("フェーズ1: 夜勤セットの事前割り当てが完了")
+# ▲▲▲【新規関数ここまで】▲▲▲
 
 
 @app.route("/api/shifts/generate", methods=['POST'])
@@ -523,6 +585,15 @@ def generate_shifts():
             if shift.staff_id in shift_draft:
                 shift_draft[shift.staff_id][shift.date] = shift.shift_type
         
+        # ==========================================================
+        # ★★★ フェーズ1: 夜勤セットの事前割り当て ★★★
+        # ==========================================================
+        assign_night_shift_sets(shift_draft, all_staff, start_date, end_date, num_days, required_staffing)
+
+
+        # ==========================================================
+        # ★★★ フェーズ2: 残りマスのバックトラッキング ★★★
+        # ==========================================================
         # 全体の総必要労働時間を計算
         SHIFT_HOURS = {"早": 8, "日1": 8, "日2": 8, "中": 8, "遅": 8, "夜": 16, "明": 0, "休": 0}
         total_required_hours = 0
@@ -535,6 +606,7 @@ def generate_shifts():
         
         app.logger.info(f"総必要労働時間: {total_required_hours}h, 平均目標: {target_avg_hours:.1f}h/人")
 
+        # 未割り当てマスをリストアップ（事前割り当てされたマスは除外される）
         unassigned_slots = []
         all_dates_in_month = [start_date + timedelta(days=i) for i in range(num_days)]
         for date in all_dates_in_month:
@@ -542,6 +614,7 @@ def generate_shifts():
                 if date not in shift_draft[staff.id]:
                     unassigned_slots.append((date, staff))
         
+        # マスのソートロジック
         slot_metrics = {}
         all_staff_ids = list(shift_draft.keys())
         shift_types_to_check = ["早", "日1", "日2", "中", "遅", "夜", "休", "明"]
@@ -564,7 +637,7 @@ def generate_shifts():
 
         app.logger.info(f"これから {len(sorted_unassigned_slots)} 個のマスを、選択肢の少ない順・重要度の高い順に埋めます。")
         
-        # --- 貪欲法によるシフト作成実行 ---
+        # バックトラッキング実行
         success = solve_shift_puzzle(all_staff, sorted_unassigned_slots, shift_draft, num_days, required_staffing, TARGET_HOLIDAYS, target_avg_hours)
 
         # --- 結果をDBに保存 ---
