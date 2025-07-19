@@ -407,23 +407,27 @@ def is_assignment_valid(staff, date, shift_type, shift_draft, num_days, required
     return True
 
 
-def solve_shift_puzzle(staff_list, dates_to_fill, shift_draft, num_days, required_staffing, TARGET_HOLIDAYS):
-    """バックトラッキングで再帰的に解を探す（スコアリング付き）"""
+# ▼▼▼【ここを修正】▼▼▼
+def solve_shift_puzzle(staff_list, dates_to_fill, shift_draft, num_days, required_staffing, TARGET_HOLIDAYS, depth=0):
+    """バックトラッキングで再帰的に解を探す（デバッグ出力強化版）"""
     
+    # --- 終了条件 ---
     if not dates_to_fill:
         return True # 全てのマスが埋まったら成功
 
+    # --- 準備 ---
     (date, staff), *remaining_dates = dates_to_fill
     all_staff_ids = list(shift_draft.keys())
+    indent = "  " * depth  # 再帰の深さに応じてインデントを作成
 
-    # 割り当て可能なシフト候補
+    # --- デバッグ出力 ---
+    print(f"{indent}---【探索開始 D:{depth}】---")
+    print(f"{indent}日付: {date}, スタッフ: {staff.name}")
+
+    # --- 割り当て候補のスコアリング ---
     base_shifts = ["早", "日1", "日2", "中", "遅", "夜", "休", "明", "有"]
     shift_scores = {shift: 0 for shift in base_shifts}
-
-    print(f"\n---【司令室チェック】---")
-    print(f"日付: {date}, スタッフ: {staff.name}")
     
-    # --- スコアリング ---
     # 1. 必要人数が足りないシフトにボーナス
     date_str = date.isoformat()
     if date_str in required_staffing:
@@ -432,47 +436,50 @@ def solve_shift_puzzle(staff_list, dates_to_fill, shift_draft, num_days, require
                 current_count = sum(1 for sid in all_staff_ids if shift_draft[sid].get(date) == shift_type)
                 if current_count < required_count:
                     shortage = required_count - current_count
-                    shift_scores[shift_type] += 100 * shortage # 不足人数が多いほど高得点
+                    shift_scores[shift_type] += 100 * shortage
 
-    print(f"計算後のボーナスポイント: {shift_scores}")
-
-    # 2. 勤務希望にボーナス
+    # 2. 勤務希望にボーナス/ペナルティ
     day_of_week_py = date.weekday()
     day_of_week_db = (day_of_week_py + 1) % 7
     for availability in staff.availabilities:
         if availability.day_of_week == day_of_week_db and availability.shift_type in shift_scores:
             if availability.is_available:
-                 shift_scores[availability.shift_type] += 10 # 希望のシフトは+10点
+                 shift_scores[availability.shift_type] += 10
             else:
-                 shift_scores[availability.shift_type] -= 1000 # 不可のシフトは入れない
+                 shift_scores[availability.shift_type] -= 1000
 
     # 3. 休日取得のボーナス
     current_holidays = list(shift_draft[staff.id].values()).count("休")
     if current_holidays < TARGET_HOLIDAYS:
-        # 目標の公休数に達していないスタッフには、「休」にボーナスポイントをあげる！
         shift_scores['休'] += 50 
+    
+    print(f"{indent}スコア: {shift_scores}")
 
     # --- 割り当て実行 ---
-    # 点数が同じ場合のランダム性を確保するため、まずリストをシャッフル
-    random.shuffle(base_shifts)
-    # その後で、点数順に並び替え
+    random.shuffle(base_shifts) # 点数が同じ場合のランダム性を確保
     sorted_shifts = sorted(base_shifts, key=lambda s: shift_scores[s], reverse=True)
 
     for shift_type in sorted_shifts:
         if is_assignment_valid(staff, date, shift_type, shift_draft, num_days, required_staffing, all_staff_ids, TARGET_HOLIDAYS):
             shift_draft[staff.id][date] = shift_type
-            if solve_shift_puzzle(staff_list, remaining_dates, shift_draft, num_days, required_staffing, TARGET_HOLIDAYS):
+            print(f"{indent} -> 試行: {staff.name} に [{shift_type}] を割り当て")
+
+            # --- 再帰呼び出し ---
+            if solve_shift_puzzle(staff_list, remaining_dates, shift_draft, num_days, required_staffing, TARGET_HOLIDAYS, depth + 1):
                 return True # 次のマス以降も成功したら、Trueを返す
-            # 失敗したので元に戻す
+            
+            # --- バックトラック ---
+            print(f"{indent} <- 失敗: [{shift_type}] を取り消し")
             del shift_draft[staff.id][date]
 
-    return False # どのシフトを試してもダメだったら失敗
+    # --- どの選択肢もダメだった場合 ---
+    print(f"{indent}!!! 行き詰まり D:{depth} - 日付: {date}, スタッフ: {staff.name} !!!")
+    return False
+# ▲▲▲【修正ここまで】▲▲▲
+
 
 @app.route("/api/shifts/generate", methods=['POST'])
 def generate_shifts():
-
-        # ↓↓↓★ここに、この魔法の呪文を追加してみて！★↓↓↓
-    print("★★★ generate_shifts関数が呼び出されました！ ★★★")
     
     data = request.get_json()
     year, month = data.get('year'), data.get('month')
@@ -491,9 +498,6 @@ def generate_shifts():
         # 前月のシフト情報も読み込む（夜勤→明けチェックのため）
         prev_month_end = start_date - timedelta(days=1)
         existing_shifts = Shift.query.filter(Shift.date.between(prev_month_end, end_date)).all()
-
-        # ↓↓↓★ここに、この1行を追加してみて！★↓↓↓
-        print(f"★★★【データ取得係チェック】データベースから {len(existing_shifts)} 件の既存シフトを見つけました。★★★")
 
         # シフト下書き(shift_draft)の初期化
         shift_draft = {s.id: {} for s in all_staff}
@@ -523,13 +527,10 @@ def generate_shifts():
         # 選択肢の少ない順にソート
         sorted_unassigned_slots = sorted(unassigned_slots, key=lambda slot: slot_options_count[slot])
 
-                # ↓↓↓★ここに、この2行を追加してみて！★↓↓↓
-        print(f"★★★【準備室チェック】これから {len(sorted_unassigned_slots)} 個のマスを埋めます。★★★")
-        print(f"埋めるマスのリスト（最初の5個だけ）: {sorted_unassigned_slots[:5]}")
-
         app.logger.info(f"これから {len(sorted_unassigned_slots)} 個のマスを、選択肢の少ない順に埋めます。")
         
         # --- バックトラッキング実行 ---
+        # 修正された関数を呼び出す（depthはデフォルトで0が使われる）
         success = solve_shift_puzzle(all_staff, sorted_unassigned_slots, shift_draft, num_days, required_staffing, TARGET_HOLIDAYS)
 
         # --- 結果をDBに保存 ---
