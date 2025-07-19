@@ -414,26 +414,24 @@ def is_assignment_valid(staff, date, shift_type, shift_draft, num_days, required
 
 # ▼▼▼【ここを修正】▼▼▼
 def solve_shift_puzzle(staff_list, dates_to_fill, shift_draft, num_days, required_staffing, TARGET_HOLIDAYS, target_avg_hours, depth=0):
-    """バックトラッキングで再帰的に解を探す（労働時間平準化対応版）"""
+    """バックトラッキングで再帰的に解を探す（最終調整版）"""
     
-    # --- 終了条件 ---
     if not dates_to_fill:
-        return True # 全てのマスが埋まったら成功
+        return True 
 
-    # --- 準備 ---
     (date, staff), *remaining_dates = dates_to_fill
     all_staff_ids = list(shift_draft.keys())
     indent = "  " * depth
 
-    # --- デバッグ出力 ---
     print(f"{indent}---【探索開始 D:{depth}】---")
     print(f"{indent}日付: {date}, スタッフ: {staff.name}")
 
     # --- 割り当て候補のスコアリング ---
-    base_shifts = ["早", "日1", "日2", "中", "遅", "夜", "休", "明"] # 「有」は自動生成の対象外
+    base_shifts = ["早", "日1", "日2", "中", "遅", "夜", "休", "明"]
     shift_scores = {shift: 0 for shift in base_shifts}
+    work_shifts = ["早", "日1", "日2", "中", "遅", "夜"]
     
-    # 1. 必要人数が足りないシフトにボーナス
+    # 1. 緊急出勤ボーナス
     date_str = date.isoformat()
     if date_str in required_staffing:
         for shift_type, required_count in required_staffing[date_str].items():
@@ -441,7 +439,8 @@ def solve_shift_puzzle(staff_list, dates_to_fill, shift_draft, num_days, require
                 current_count = sum(1 for sid in all_staff_ids if shift_draft[sid].get(date) == shift_type)
                 if current_count < required_count:
                     shortage = required_count - current_count
-                    shift_scores[shift_type] += 100 * shortage
+                    # 緊急度に応じてボーナスを大幅に引き上げる
+                    shift_scores[shift_type] += 200 * shortage
 
     # 2. 勤務希望にボーナス/ペナルティ
     day_of_week_py = date.weekday()
@@ -458,15 +457,16 @@ def solve_shift_puzzle(staff_list, dates_to_fill, shift_draft, num_days, require
     if current_holidays < TARGET_HOLIDAYS:
         shift_scores['休'] += 50 
     
-    # 4. 労働時間の平準化ボーナス
+    # 4. 労働時間の平準化（ペナルティ方式）
     SHIFT_HOURS = {"早": 8, "日1": 8, "日2": 8, "中": 8, "遅": 8, "夜": 16, "明": 0, "休": 0}
     current_hours = sum(SHIFT_HOURS.get(st, 0) for st in shift_draft[staff.id].values())
     
-    if current_hours < target_avg_hours:
-        bonus_point = (target_avg_hours - current_hours) / 8 * 5 # 8時間(1日分)あたり5ポイント
-        for shift_type in ["早", "日1", "日2", "中", "遅", "夜"]:
+    # 目標時間を超えている場合、勤務シフトにペナルティを与える
+    if current_hours > target_avg_hours:
+        penalty_point = (current_hours - target_avg_hours) / 8 * 10 # 8時間超過あたり10ポイントのペナルティ
+        for shift_type in work_shifts:
             if shift_type in shift_scores:
-                shift_scores[shift_type] += bonus_point
+                shift_scores[shift_type] -= penalty_point
     
     print(f"{indent}スコア: {shift_scores}")
 
@@ -479,15 +479,12 @@ def solve_shift_puzzle(staff_list, dates_to_fill, shift_draft, num_days, require
             shift_draft[staff.id][date] = shift_type
             print(f"{indent} -> 試行: {staff.name} に [{shift_type}] を割り当て")
 
-            # --- 再帰呼び出し ---
             if solve_shift_puzzle(staff_list, remaining_dates, shift_draft, num_days, required_staffing, TARGET_HOLIDAYS, target_avg_hours, depth + 1):
                 return True
             
-            # --- バックトラック ---
             print(f"{indent} <- 失敗: [{shift_type}] を取り消し")
             del shift_draft[staff.id][date]
 
-    # --- どの選択肢もダメだった場合 ---
     print(f"{indent}!!! 行き詰まり D:{depth} - 日付: {date}, スタッフ: {staff.name} !!!")
     return False
 # ▲▲▲【修正ここまで】▲▲▲
@@ -518,7 +515,6 @@ def generate_shifts():
             if shift.staff_id in shift_draft:
                 shift_draft[shift.staff_id][shift.date] = shift.shift_type
         
-        # ▼▼▼【ここを修正】▼▼▼
         # 全体の総必要労働時間を計算
         SHIFT_HOURS = {"早": 8, "日1": 8, "日2": 8, "中": 8, "遅": 8, "夜": 16, "明": 0, "休": 0}
         total_required_hours = 0
@@ -530,7 +526,6 @@ def generate_shifts():
         target_avg_hours = total_required_hours / workable_staff_count if workable_staff_count > 0 else 0
         
         app.logger.info(f"総必要労働時間: {total_required_hours}h, 平均目標: {target_avg_hours:.1f}h/人")
-        # ▲▲▲【修正ここまで】▲▲▲
 
         unassigned_slots = []
         all_dates_in_month = [start_date + timedelta(days=i) for i in range(num_days)]
@@ -541,7 +536,7 @@ def generate_shifts():
         
         slot_metrics = {}
         all_staff_ids = list(shift_draft.keys())
-        shift_types_to_check = ["早", "日1", "日2", "中", "遅", "夜", "休", "明"] #「有」を削除
+        shift_types_to_check = ["早", "日1", "日2", "中", "遅", "夜", "休", "明"]
         
         for date, staff in unassigned_slots:
             option_count = 0
@@ -562,9 +557,7 @@ def generate_shifts():
         app.logger.info(f"これから {len(sorted_unassigned_slots)} 個のマスを、選択肢の少ない順・重要度の高い順に埋めます。")
         
         # --- バックトラッキング実行 ---
-        # ▼▼▼【ここを修正】▼▼▼
         success = solve_shift_puzzle(all_staff, sorted_unassigned_slots, shift_draft, num_days, required_staffing, TARGET_HOLIDAYS, target_avg_hours)
-        # ▲▲▲【修正ここまで】▲▲▲
 
         # --- 結果をDBに保存 ---
         final_message = "シフトの自動作成が完了しました！"
