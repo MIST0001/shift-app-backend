@@ -352,6 +352,13 @@ def is_assignment_valid(staff, date, shift_type, shift_draft, num_days, required
 
     # 2. 夜勤関連ルール
     prev_shift = shift_draft[staff.id].get(date - timedelta(days=1))
+
+    # ▼▼▼【ここを修正】▼▼▼
+    # 「明」は前日が「夜」の場合のみ許可
+    if shift_type == "明" and prev_shift != "夜":
+        return False 
+    # ▲▲▲【修正ここまで】▲▲▲
+
     if prev_shift == "夜" and shift_type not in ["明", "休"]:
         return False # 夜勤の次の日は明けか休み
     
@@ -511,7 +518,6 @@ def generate_shifts():
                 if date not in shift_draft[staff.id]:
                     unassigned_slots.append((date, staff))
         
-        # ▼▼▼【ここを修正】▼▼▼
         # --- 最も制約の厳しいマスから埋める (Most Constrained Variable) ---
         slot_metrics = {}
         all_staff_ids = list(shift_draft.keys())
@@ -538,7 +544,6 @@ def generate_shifts():
         
         # 選択肢の少なさ(昇順)、次にインパクトの大きさ(降順)でソート
         sorted_unassigned_slots = sorted(unassigned_slots, key=lambda slot: slot_metrics[slot])
-        # ▲▲▲【修正ここまで】▲▲▲
 
         app.logger.info(f"これから {len(sorted_unassigned_slots)} 個のマスを、選択肢の少ない順・重要度の高い順に埋めます。")
         
