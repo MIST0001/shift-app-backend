@@ -486,77 +486,87 @@ def solve_shift_puzzle(staff_list, dates_to_fill, shift_draft, num_days, require
     print(f"{indent}!!! 行き詰まり D:{depth} - 日付: {date}, スタッフ: {staff.name} !!!")
     return False
 
-# ▼▼▼【ここから新規関数】▼▼▼
-def assign_night_shift_sets(shift_draft, all_staff, start_date, end_date, num_days, required_staffing):
-    """「夜勤→明け→休み」の3連続セットを優先的に割り当てる"""
-    app.logger.info("フェーズ1: 夜勤セットの事前割り当てを開始")
+# ▼▼▼【ここを修正】▼▼▼
+def assign_night_shift_sets(shift_draft, all_staff, start_date, end_date, num_days, required_staffing, TARGET_HOLIDAYS):
+    """
+    【戦略的バージョン】夜勤セットの割り当てが最も困難なスタッフから優先的に、
+    「夜→明→休」の3連続セットを割り当てる。
+    """
+    app.logger.info("フェーズ1:【戦略的】夜勤セットの事前割り当てを開始")
     
     night_shift_staff = [s for s in all_staff if s.employment_type in ["正規職員", "嘱託職員"]]
     if not night_shift_staff:
         app.logger.info("夜勤可能なスタッフがいないため、事前割り当てをスキップします。")
         return
 
-    # --- 前月からの夜勤引き継ぎ処理 ---
+    all_staff_ids = [s.id for s in all_staff]
+
+    # --- 前月からの夜勤引き継ぎ処理 (これは変更なし) ---
     for staff in night_shift_staff:
         prev_day_shift = shift_draft[staff.id].get(start_date - timedelta(days=1))
         two_days_ago_shift = shift_draft[staff.id].get(start_date - timedelta(days=2))
-
-        # 前日が夜勤の場合
         if prev_day_shift == "夜":
             if start_date <= end_date: shift_draft[staff.id][start_date] = "明"
             if start_date + timedelta(days=1) <= end_date: shift_draft[staff.id][start_date + timedelta(days=1)] = "休"
-            app.logger.info(f"前月からの引き継ぎ: {staff.name}の{start_date.day}日, {start_date.day+1}日に「明」「休」をセット")
-
-        # 2日前が夜勤で前日が明けの場合
         elif two_days_ago_shift == "夜" and prev_day_shift == "明":
             if start_date <= end_date: shift_draft[staff.id][start_date] = "休"
-            app.logger.info(f"前月からの引き継ぎ: {staff.name}の{start_date.day}日に「休」をセット")
 
-    # --- 当該月の夜勤セット割り当て ---
-    all_dates = [start_date + timedelta(days=i) for i in range(num_days)]
-    
-    for date in all_dates:
-        # その日の夜勤必要人数を取得
-        required_night_count = required_staffing.get(date.isoformat(), {}).get("夜", 0)
-        if required_night_count == 0:
-            continue
+    # --- 戦略的な夜勤セット割り当てループ ---
+    while True:
+        # --- 1. 現状で必要な総夜勤数を計算 ---
+        total_required_nights = sum(d.get("夜", 0) for d in required_staffing.values())
+        current_assigned_nights = sum(1 for shifts in shift_draft.values() for shift_type in shifts.values() if shift_type == "夜")
+        
+        if current_assigned_nights >= total_required_nights:
+            app.logger.info("必要な夜勤数の割り当てが完了しました。")
+            break
 
-        # 現在の夜勤人数
-        current_night_count = sum(1 for sid in shift_draft if shift_draft[sid].get(date) == "夜")
+        # --- 2. 各スタッフの「夜勤セット配置可能リスト」を作成 ---
+        staff_potential_placements = {}
+        for staff in night_shift_staff:
+            # このループでは、1人1夜勤セットずつ入れていくため、既に入っている人はスキップ
+            if any(s == "夜" for s in shift_draft[staff.id].values()):
+                 # 複数回入れるように一旦変更
+                pass
 
-        # 必要人数に達するまで夜勤を割り当てる
-        while current_night_count < required_night_count:
-            # 候補者を探す: その日にまだシフトがなく、3日間空いているスタッフ
-            candidates = []
-            random.shuffle(night_shift_staff) # 毎回同じ人にならないようにシャッフル
-            for staff in night_shift_staff:
-                # 3日間（夜、明、休）が空いているかチェック
-                is_available = True
-                for i in range(3):
-                    d = date + timedelta(days=i)
-                    if d > end_date or shift_draft[staff.id].get(d) is not None:
-                        is_available = False
-                        break
+            potential_dates = []
+            for i in range(num_days - 2): # 月末2日は夜勤セットを開始できない
+                date = start_date + timedelta(days=i)
                 
-                if is_available:
-                    candidates.append(staff)
+                # is_assignment_validを使って、夜勤が配置可能かチェック
+                if is_assignment_valid(staff, date, "夜", shift_draft, num_days, required_staffing, all_staff_ids, TARGET_HOLIDAYS) and \
+                   is_assignment_valid(staff, date + timedelta(days=1), "明", shift_draft, num_days, required_staffing, all_staff_ids, TARGET_HOLIDAYS) and \
+                   is_assignment_valid(staff, date + timedelta(days=2), "休", shift_draft, num_days, required_staffing, all_staff_ids, TARGET_HOLIDAYS):
+                    potential_dates.append(date)
             
-            if not candidates:
-                app.logger.warning(f"{date}の夜勤セットを割り当てる候補者が見つかりませんでした。")
-                break # 候補者がいなければ次の日へ
+            if potential_dates:
+                staff_potential_placements[staff.id] = potential_dates
+        
+        if not staff_potential_placements:
+            app.logger.warning("夜勤セットを配置できるスタッフが一人も見つかりませんでした。")
+            break
 
-            # 候補者の中から一人選んで割り当て（ここでは単純に最初の候補者）
-            target_staff = candidates[0]
-            shift_draft[target_staff.id][date] = "夜"
-            if date + timedelta(days=1) <= end_date:
-                shift_draft[target_staff.id][date + timedelta(days=1)] = "明"
-            if date + timedelta(days=2) <= end_date:
-                shift_draft[target_staff.id][date + timedelta(days=2)] = "休"
-            app.logger.info(f"{target_staff.name}の{date.day}日から「夜→明→休」をセット")
+        # --- 3. 最も配置の選択肢が少ないスタッフを選ぶ ---
+        sorted_staff_by_potential = sorted(staff_potential_placements.items(), key=lambda item: len(item[1]))
+        
+        target_staff_id, placable_dates = sorted_staff_by_potential[0]
+        
+        if not placable_dates:
+             app.logger.warning(f"ID:{target_staff_id}は選択肢が0です。これ以上配置できません。")
+             break
 
-            current_night_count += 1
-            
-    app.logger.info("フェーズ1: 夜勤セットの事前割り当てが完了")
+        # --- 4. 選ばれたスタッフの夜勤セットを配置 ---
+        place_date = random.choice(placable_dates)
+        
+        target_staff_obj = next(s for s in all_staff if s.id == target_staff_id)
+        shift_draft[target_staff_id][place_date] = "夜"
+        if place_date + timedelta(days=1) <= end_date:
+            shift_draft[target_staff_id][place_date + timedelta(days=1)] = "明"
+        if place_date + timedelta(days=2) <= end_date:
+            shift_draft[target_staff_id][place_date + timedelta(days=2)] = "休"
+        app.logger.info(f"【最優先割当】{target_staff_obj.name} (選択肢:{len(placable_dates)}個) の {place_date.day}日から「夜→明→休」をセット")
+
+    app.logger.info("フェーズ1:【戦略的】夜勤セットの事前割り当てが完了")
 # ▲▲▲【新規関数ここまで】▲▲▲
 
 
@@ -588,7 +598,7 @@ def generate_shifts():
         # ==========================================================
         # ★★★ フェーズ1: 夜勤セットの事前割り当て ★★★
         # ==========================================================
-        assign_night_shift_sets(shift_draft, all_staff, start_date, end_date, num_days, required_staffing)
+        assign_night_shift_sets(shift_draft, all_staff, start_date, end_date, num_days, required_staffing, TARGET_HOLIDAYS)
 
 
         # ==========================================================
