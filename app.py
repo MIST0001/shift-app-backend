@@ -377,25 +377,25 @@ def is_assignment_valid(staff, date, shift_type, shift_draft, num_days, required
             return False
 
     # 4. 公休数チェック
-    # current_holidays = list(shift_draft[staff.id].values()).count("休")
+    current_holidays = list(shift_draft[staff.id].values()).count("休")
     # 月の残りの日数
-    # remaining_days = num_days - date.day + 1
-    # required_holidays = TARGET_HOLIDAYS - current_holidays
+    remaining_days = num_days - date.day + 1
+    required_holidays = TARGET_HOLIDAYS - current_holidays
     
-    # if shift_type == "休" and current_holidays >= TARGET_HOLIDAYS:
-    #     return False # 既に目標公休数に達していたら、もう休まない
-    # if shift_type != "休" and remaining_days < required_holidays:
-    #     return False # 残り日数が必要公休数より少ない場合、必ず休みにする
+    if shift_type == "休" and current_holidays >= TARGET_HOLIDAYS:
+        return False # 既に目標公休数に達していたら、もう休まない
+    if shift_type != "休" and remaining_days < required_holidays:
+        return False # 残り日数が必要公休数より少ない場合、必ず休みにする
     
     # 5. 日ごとの必要人数チェック
-    #if shift_type in work_shifts:
-    #    date_str = date.isoformat()
-    #    required_count = required_staffing.get(date_str, {}).get(shift_type, 0)
+    if shift_type in work_shifts:
+        date_str = date.isoformat()
+        required_count = required_staffing.get(date_str, {}).get(shift_type, 0)
         
-    #    if required_count > 0:
-    #        current_count = sum(1 for sid in all_staff_ids if shift_draft[sid].get(date) == shift_type)
-    #        if current_count >= required_count:
-    #            return False # 既に必要人数を満たしていたら、そのシフトには入らない
+        if required_count > 0:
+            current_count = sum(1 for sid in all_staff_ids if shift_draft[sid].get(date) == shift_type)
+            if current_count >= required_count:
+                return False # 既に必要人数を満たしていたら、そのシフトには入らない
     
     # 6. 新人の単独勤務チェック
     if staff.experience == "新人" and shift_type in work_shifts:
